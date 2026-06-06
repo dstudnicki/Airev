@@ -43,6 +43,8 @@ const BUILT_IN_THEME_NAMES: &[&str] = &[
     "gruvbox-dark",
     "high-contrast",
 ];
+const GSD_ADAPTER_SOURCE_DIR: &str = "adapters/gsd";
+const GSD_ADAPTER_INSTALL_DIR_NAME: &str = "airev";
 
 #[derive(Parser)]
 #[command(name = "airev")]
@@ -67,6 +69,11 @@ enum Commands {
     Revisions,
     /// Show unreviewed revision summary.
     Status,
+    /// Install and inspect the Airev GSD adapter.
+    Gsd {
+        #[command(subcommand)]
+        command: GsdCommand,
+    },
     /// Show a revision/file diff.
     Diff {
         revision: String,
@@ -84,6 +91,14 @@ enum Commands {
         #[command(subcommand)]
         command: ThemeCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum GsdCommand {
+    /// Install the Airev adapter into the global GSD/pi extensions directory.
+    Install,
+    /// Show Airev and GSD adapter installation status.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -206,6 +221,10 @@ async fn main() -> Result<()> {
                 let project = find_initialized_project_root(&cwd).unwrap_or(cwd);
                 status(&project).await
             }
+            Commands::Gsd { command } => match command {
+                GsdCommand::Install => install_gsd_adapter(&cwd),
+                GsdCommand::Status => gsd_status(&cwd),
+            },
             Commands::Diff {
                 revision,
                 path,
@@ -1733,7 +1752,10 @@ fn line_number_spans(
     let number_style = Style::default().fg(theme.muted).bg(background);
     let marker_style = diff_gutter_style(&line.kind, theme).bg(background);
     vec![
-        Span::styled(format_line_number(display_line_number(line), width), number_style),
+        Span::styled(
+            format_line_number(display_line_number(line), width),
+            number_style,
+        ),
         Span::styled(display_line_marker(line).to_string(), marker_style),
         Span::styled(" │ ", Style::default().fg(theme.border).bg(background)),
     ]
@@ -2291,6 +2313,217 @@ async fn status(project: &Path) -> Result<()> {
         println!("Run `airev revisions` to inspect them or `airev` for the TUI.");
     }
     Ok(())
+}
+
+fn install_gsd_adapter(start: &Path) -> Result<()> {
+    let source = find_gsd_adapter_source_dir(start)?;
+    let destination = gsd_adapter_install_dir()?;
+
+    if same_path(&source, &destination) {
+        bail!(
+            "Adapter source and destination are both {}. Refusing to overwrite the source.",
+            source.display()
+        );
+    }
+
+    if destination.exists() {
+        fs::remove_dir_all(&destination)
+            .with_context(|| format!("Failed to remove existing {}", destination.display()))?;
+    }
+    copy_dir_recursive(&source, &destination)?;
+
+    if adapter_needs_dependency_install(&destination)? {
+        run_adapter_dependency_install(&destination)?;
+    }
+
+    println!("Airev GSD adapter installed.");
+    println!("Restart or reload GSD once.");
+    println!("Then run /airev-init in a project.");
+    Ok(())
+}
+
+fn gsd_status(start: &Path) -> Result<()> {
+    let adapter_path = gsd_adapter_install_dir()?;
+    let adapter_installed = adapter_path.join("extension-manifest.json").exists()
+        && (adapter_path.join("index.ts").exists() || adapter_path.join("index.js").exists());
+    let project = find_initialized_project_root(start);
+    let project_db = project
+        .as_ref()
+        .map(|root| root.join(STORE_DIR).join(DB_FILE));
+
+    println!("Airev binary: ok");
+    println!(
+        "GSD adapter: {}",
+        if adapter_installed {
+            "installed"
+        } else {
+            "missing"
+        }
+    );
+    println!("GSD adapter path: {}", display_home_relative(&adapter_path));
+    println!(
+        "Project initialized: {}",
+        if project_db.as_ref().is_some_and(|path| path.exists()) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!(
+        "Active project DB: {}",
+        project_db
+            .as_ref()
+            .map(|path| display_project_relative(start, path))
+            .unwrap_or_else(|| STORE_DIR.to_string() + "/" + DB_FILE)
+    );
+    Ok(())
+}
+
+fn find_gsd_adapter_source_dir(start: &Path) -> Result<PathBuf> {
+    if let Ok(value) = env::var("AIREV_GSD_ADAPTER_SOURCE") {
+        let candidate = PathBuf::from(value);
+        validate_gsd_adapter_source(&candidate)?;
+        return Ok(candidate);
+    }
+
+    for dir in start.ancestors() {
+        let candidate = dir.join(GSD_ADAPTER_SOURCE_DIR);
+        if validate_gsd_adapter_source(&candidate).is_ok() {
+            return Ok(candidate);
+        }
+    }
+
+    if let Some(manifest_dir) = option_env!("CARGO_MANIFEST_DIR") {
+        let candidate = Path::new(manifest_dir).join(GSD_ADAPTER_SOURCE_DIR);
+        if validate_gsd_adapter_source(&candidate).is_ok() {
+            return Ok(candidate);
+        }
+    }
+
+    bail!(
+        "Could not find {GSD_ADAPTER_SOURCE_DIR}. Run `airev gsd install` from the Airev source checkout or set AIREV_GSD_ADAPTER_SOURCE."
+    )
+}
+
+fn validate_gsd_adapter_source(path: &Path) -> Result<()> {
+    if path.join("extension-manifest.json").is_file() && path.join("index.ts").is_file() {
+        Ok(())
+    } else {
+        bail!(
+            "{} is not an Airev GSD adapter source directory",
+            path.display()
+        )
+    }
+}
+
+fn gsd_adapter_install_dir() -> Result<PathBuf> {
+    Ok(gsd_extensions_dir()?.join(GSD_ADAPTER_INSTALL_DIR_NAME))
+}
+
+fn gsd_extensions_dir() -> Result<PathBuf> {
+    if let Ok(value) = env::var("AIREV_GSD_EXTENSIONS_DIR") {
+        return Ok(PathBuf::from(value));
+    }
+
+    let home = env::var("HOME").context("HOME is not set; cannot locate ~/.pi/agent/extensions")?;
+    Ok(PathBuf::from(home)
+        .join(".pi")
+        .join("agent")
+        .join("extensions"))
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("Failed to create {}", destination.display()))?;
+
+    for entry in WalkDir::new(source) {
+        let entry = entry.with_context(|| format!("Failed to read {}", source.display()))?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(source)
+            .with_context(|| format!("Failed to relativize {}", path.display()))?;
+        if relative.as_os_str().is_empty() || should_skip_adapter_copy_path(relative) {
+            continue;
+        }
+
+        let target = destination.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target)
+                .with_context(|| format!("Failed to create {}", target.display()))?;
+        } else if entry.file_type().is_file() {
+            copy_file(path, &target)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn should_skip_adapter_copy_path(relative: &Path) -> bool {
+    relative.components().any(|component| match component {
+        Component::Normal(name) => matches!(
+            name.to_str(),
+            Some("node_modules" | ".git" | ".DS_Store" | "dist")
+        ),
+        _ => false,
+    })
+}
+
+fn adapter_needs_dependency_install(adapter_dir: &Path) -> Result<bool> {
+    let package_json_path = adapter_dir.join("package.json");
+    if !package_json_path.exists() {
+        return Ok(false);
+    }
+
+    let text = fs::read_to_string(&package_json_path)
+        .with_context(|| format!("Failed to read {}", package_json_path.display()))?;
+    let package: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("Failed to parse {}", package_json_path.display()))?;
+
+    Ok(json_object_has_entries(package.get("dependencies")))
+}
+
+fn json_object_has_entries(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(|value| value.as_object())
+        .is_some_and(|object| !object.is_empty())
+}
+
+fn run_adapter_dependency_install(adapter_dir: &Path) -> Result<()> {
+    let status = Command::new("npm")
+        .arg("install")
+        .arg("--omit=dev")
+        .current_dir(adapter_dir)
+        .status()
+        .context("Failed to run `npm install --omit=dev` for the GSD adapter")?;
+
+    if !status.success() {
+        bail!("GSD adapter dependency install failed with {status}");
+    }
+    Ok(())
+}
+
+fn display_home_relative(path: &Path) -> String {
+    if let Ok(home) = env::var("HOME") {
+        let home = PathBuf::from(home);
+        if let Ok(relative) = path.strip_prefix(&home) {
+            return format!("~/{}", path_to_forward_slashes(&relative.to_path_buf()));
+        }
+    }
+    path.display().to_string()
+}
+
+fn display_project_relative(start: &Path, path: &Path) -> String {
+    let base = find_initialized_project_root(start).unwrap_or_else(|| start.to_path_buf());
+    path.strip_prefix(&base)
+        .map(|relative| path_to_forward_slashes(&relative.to_path_buf()))
+        .unwrap_or_else(|_| path.display().to_string())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 async fn open_diff(project: &Path, revision: &str, input_path: &str, editor: &str) -> Result<()> {

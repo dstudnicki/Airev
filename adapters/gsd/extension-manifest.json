@@ -1,0 +1,14 @@
+{
+  "id": "airev-gsd-adapter",
+  "name": "Airev GSD Adapter",
+  "version": "0.1.0",
+  "description": "Records GSD AI turns into the local Rust Airev revision journal.",
+  "tier": "community",
+  "requires": {
+    "platform": ">=2.29.0"
+  },
+  "provides": {
+    "commands": ["airev-init", "airev-status", "airev-revisions"],
+    "hooks": ["before_agent_start", "tool_call", "agent_end"]
+  }
+}
