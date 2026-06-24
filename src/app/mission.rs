@@ -1,17 +1,5 @@
 use super::*;
 
-pub(crate) fn mission_control_block<'a>(
-    app: &MissionControlApp,
-    panel: MissionControlPanel,
-    title: &'a str,
-) -> Block<'a> {
-    let mut block = panel_block(title, &app.settings.theme);
-    if app.focus == panel {
-        block = block.border_style(Style::default().fg(app.settings.theme.accent));
-    }
-    block
-}
-
 pub(crate) async fn handle_mission_command(project: &Path, command: MissionCommand) -> Result<()> {
     match command {
         MissionCommand::Start {
