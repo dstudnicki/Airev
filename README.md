@@ -114,9 +114,95 @@ After the adapter is installed and GSD is reloaded, these commands are available
 /airev-init
 /airev-status
 /airev-revisions
+/airev-mission-start Airev: build X; CashPilot: fix Y
+/airev-mission-list
+/airev-mission-status [mission-id]
+/airev-mission-show <mission-id>
+/airev-mission-update-agent <mission-id> <agent-id> --status complete --summary "..."
 ```
 
 The adapter also records GSD agent turns automatically for initialized projects.
+
+## Mission Control
+
+Airev can persist text-only multi-project missions. Voice input is intentionally out of scope; a speech-to-text layer can feed the same text commands later.
+
+Configure named projects in `.ai-revisions/config.toml` or `~/.config/airev/config.toml`:
+
+```toml
+[projects.Airev]
+path = "/home/me/Dev/Airev"
+description = "Mission Control repo"
+
+[projects.CashPilot]
+path = "/home/me/Dev/CashPilot"
+```
+
+Create a mission from project-prefixed text:
+
+```bash
+airev mission start --title "Daily mission" --text "Airev: add dispatcher; CashPilot: inspect login diffs"
+```
+
+Or pass explicit project tasks:
+
+```bash
+airev mission start --task "Airev=Add dispatcher" --task "CashPilot=Inspect login diffs"
+```
+
+Inspect and update mission agents:
+
+```bash
+airev mission list
+airev mission status <mission-id>
+airev mission show <mission-id>
+airev mission update-agent <mission-id> <agent-id> --status complete --summary "Verified" --revision 18 --diff "18:src/main.rs"
+```
+
+Mission JSON is stored under `.ai-revisions/runtime/missions/` so MAIN/LEAD agents, GSD commands, and the terminal UI can share the same state.
+
+## Mission diff drilldown
+
+Mission agents can point at existing Airev revision diffs. List available refs:
+
+```bash
+airev mission diffs <mission-id>
+airev mission diffs <mission-id> <agent-id>
+```
+
+Open a stored diff through the existing Airev diff renderer:
+
+```bash
+airev mission open-diff <mission-id> <agent-id> 0 --terminal
+airev mission open-diff <mission-id> <agent-id> 0 --editor code
+```
+
+The diff index is shown by `airev mission diffs`. If a ref is stale or not bound to a revision ID, Airev returns an explicit error instead of silently opening the wrong file.
+
+## Mission Control window manager
+
+Open the non-voice terminal dashboard for the latest mission or a specific mission:
+
+```bash
+airev mission wm
+airev mission wm <mission-id>
+```
+
+The dashboard is a tiling-style view with MAIN, AGENTS, DETAIL, and DIFFS panels. It is intentionally terminal-native rather than a desktop window manager replacement.
+
+Keys:
+
+```txt
+q              quit
+Tab / Shift+Tab cycle focused panel
+h / j / k / l  move focus like a tiling window manager
+1 / 2 / 3 / 4  focus MAIN / AGENTS / DETAIL / DIFFS
+Up / Down      select agent or diff in the focused list
+r              reload mission JSON from disk
+Enter          open the selected DIFFS item with the terminal diff renderer
+```
+
+The UI shows agent status, project path, task, summary, last error, revision IDs, and diff refs. If a selected diff is stale or unbound, the footer reports the error instead of opening the wrong file.
 
 ## Local data and git hygiene
 

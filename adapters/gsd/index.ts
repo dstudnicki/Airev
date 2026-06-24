@@ -97,6 +97,63 @@ export default function (pi: ExtensionAPI) {
       notify(ctx, result.stdout || result.stderr || "Airev revisions completed.", result.code === 0 ? "info" : "error");
     },
   });
+
+  pi.registerCommand("airev-mission-start", {
+    description: "Create a Mission Control run from project-prefixed text, e.g. `Airev: build X; CashPilot: fix Y`.",
+    handler: async (args, ctx) => {
+      const text = commandText(args).trim();
+      if (!text) {
+        notify(ctx, "Usage: /airev-mission-start Airev: build X; CashPilot: fix Y", "warning");
+        return;
+      }
+      const result = await runAirev(pi, ctx, ["mission", "start", "--text", text], { quiet: true });
+      notifyCommandResult(ctx, result, "Airev mission created.");
+    },
+  });
+
+  pi.registerCommand("airev-mission-list", {
+    description: "List stored Airev Mission Control runs.",
+    handler: async (_args, ctx) => {
+      const result = await runAirev(pi, ctx, ["mission", "list"], { quiet: true });
+      notifyCommandResult(ctx, result, "Airev mission list completed.");
+    },
+  });
+
+  pi.registerCommand("airev-mission-status", {
+    description: "Show Mission Control status. Optional argument: mission id.",
+    handler: async (args, ctx) => {
+      const mission = commandText(args).trim();
+      const command = mission ? ["mission", "status", mission] : ["mission", "status"];
+      const result = await runAirev(pi, ctx, command, { quiet: true });
+      notifyCommandResult(ctx, result, "Airev mission status completed.");
+    },
+  });
+
+  pi.registerCommand("airev-mission-show", {
+    description: "Show a Mission Control run with generated agent prompts. Argument: mission id.",
+    handler: async (args, ctx) => {
+      const mission = commandText(args).trim();
+      if (!mission) {
+        notify(ctx, "Usage: /airev-mission-show <mission-id>", "warning");
+        return;
+      }
+      const result = await runAirev(pi, ctx, ["mission", "show", mission], { quiet: true });
+      notifyCommandResult(ctx, result, "Airev mission show completed.");
+    },
+  });
+
+  pi.registerCommand("airev-mission-update-agent", {
+    description: "Update a mission agent. Syntax: <mission-id> <agent-id> [--status complete] [--summary text] [--revision 1] [--diff 1:src/main.rs].",
+    handler: async (args, ctx) => {
+      const tokens = tokenizeCommandText(commandText(args));
+      if (tokens.length < 2) {
+        notify(ctx, "Usage: /airev-mission-update-agent <mission-id> <agent-id> [--status complete] [--summary text] [--revision 1] [--diff 1:path]", "warning");
+        return;
+      }
+      const result = await runAirev(pi, ctx, ["mission", "update-agent", ...tokens], { quiet: true });
+      notifyCommandResult(ctx, result, "Airev mission agent updated.");
+    },
+  });
 }
 
 type RunOptions = { quiet?: boolean };
@@ -171,6 +228,56 @@ function messageText(message: any): string {
   }
   if (typeof message?.text === "string") return message.text;
   return "";
+}
+
+function commandText(args: unknown): string {
+  if (args == null) return "";
+  if (typeof args === "string") return args;
+  if (Array.isArray(args)) return args.map(String).join(" ");
+  if (typeof args === "object") {
+    const record = args as Record<string, unknown>;
+    for (const key of ["text", "input", "args", "argument", "value"]) {
+      if (typeof record[key] === "string") return record[key] as string;
+    }
+  }
+  return String(args);
+}
+
+function tokenizeCommandText(text: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+
+  for (const char of text) {
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function notifyCommandResult(ctx: ExtensionContext, result: ExecResult, fallback: string) {
+  notify(ctx, result.stdout || result.stderr || fallback, result.code === 0 ? "info" : "error");
 }
 
 function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" | "success") {

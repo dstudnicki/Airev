@@ -16,7 +16,7 @@ use crossterm::terminal::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -36,6 +36,7 @@ const DB_FILE: &str = "db.sqlite";
 const RUNTIME_DIR: &str = "runtime";
 const SNAPSHOTS_DIR: &str = "snapshots";
 const ACTIVE_TURN_FILE: &str = "current-turn.json";
+const MISSIONS_DIR: &str = "missions";
 const BUILT_IN_THEME_NAMES: &[&str] = &[
     "terminal",
     "airev-dark",
@@ -74,6 +75,11 @@ enum Commands {
         #[command(subcommand)]
         command: GsdCommand,
     },
+    /// Create and inspect multi-project Mission Control work.
+    Mission {
+        #[command(subcommand)]
+        command: MissionCommand,
+    },
     /// Show a revision/file diff.
     Diff {
         revision: String,
@@ -99,6 +105,75 @@ enum GsdCommand {
     Install,
     /// Show Airev and GSD adapter installation status.
     Status,
+}
+
+#[derive(Subcommand)]
+enum MissionCommand {
+    /// Create a text-only Mission Control run from project-prefixed tasks.
+    Start {
+        /// Human-readable mission title.
+        #[arg(long)]
+        title: Option<String>,
+        /// Mission source text. Lines like `Airev: build X` become project tasks.
+        #[arg(long)]
+        text: Option<String>,
+        /// Read mission source text from a file.
+        #[arg(long = "text-file")]
+        text_file: Option<PathBuf>,
+        /// Explicit project task in `project=task` or `project:task` form. Repeatable.
+        #[arg(long = "task")]
+        tasks: Vec<String>,
+    },
+    /// List stored missions.
+    List,
+    /// Show a stored mission with generated agent prompts.
+    Show { mission: String },
+    /// Show compact mission status. Defaults to the newest mission.
+    Status { mission: Option<String> },
+    /// Update a mission agent status, summary, error, revisions, or diff references.
+    UpdateAgent {
+        mission: String,
+        agent: String,
+        #[arg(long, value_enum)]
+        status: Option<MissionAgentStatusArg>,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        error: Option<String>,
+        #[arg(long = "revision")]
+        revisions: Vec<i64>,
+        #[arg(long = "diff")]
+        diffs: Vec<String>,
+    },
+    /// List mission diff references grouped by project and agent.
+    Diffs {
+        mission: String,
+        agent: Option<String>,
+    },
+    /// Open a stored mission diff reference through Airev's existing diff flow.
+    OpenDiff {
+        mission: String,
+        agent: String,
+        /// Zero-based diff index as shown by `mission diffs`.
+        diff_index: usize,
+        /// Render the diff in the terminal instead of opening an editor.
+        #[arg(long)]
+        terminal: bool,
+        #[arg(long, default_value = "code")]
+        editor: String,
+    },
+    /// Open the non-voice Mission Control window-manager dashboard.
+    Wm { mission: Option<String> },
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum MissionAgentStatusArg {
+    Pending,
+    Running,
+    Waiting,
+    Complete,
+    Failed,
+    Blocked,
 }
 
 #[derive(Subcommand)]
@@ -225,6 +300,10 @@ async fn main() -> Result<()> {
                 GsdCommand::Install => install_gsd_adapter(&cwd),
                 GsdCommand::Status => gsd_status(&cwd),
             },
+            Commands::Mission { command } => {
+                let project = find_initialized_project_root(&cwd).unwrap_or(cwd);
+                handle_mission_command(&project, command).await
+            }
             Commands::Diff {
                 revision,
                 path,
@@ -314,6 +393,25 @@ struct TuiApp {
     theme_names: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MissionControlPanel {
+    Main,
+    Agents,
+    Detail,
+    Diffs,
+}
+
+struct MissionControlApp {
+    mission_id: String,
+    mission: Mission,
+    focus: MissionControlPanel,
+    selected_agent: usize,
+    selected_diff: usize,
+    last_refresh: Instant,
+    message: String,
+    settings: TuiSettings,
+}
+
 #[derive(Clone, Debug)]
 struct TuiSettings {
     theme_name: String,
@@ -350,6 +448,86 @@ struct AirevConfigFile {
     theme: Option<String>,
     ui: Option<UiConfigFile>,
     themes: Option<BTreeMap<String, ThemeConfigFile>>,
+    projects: Option<BTreeMap<String, ProjectConfigFile>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct ProjectConfigFile {
+    path: String,
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ProjectRegistry {
+    projects: BTreeMap<String, RegisteredProject>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RegisteredProject {
+    name: String,
+    path: PathBuf,
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum MissionStatus {
+    Draft,
+    Running,
+    Waiting,
+    Complete,
+    Failed,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum MissionAgentStatus {
+    Pending,
+    Running,
+    Waiting,
+    Complete,
+    Failed,
+    Blocked,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct MissionDiffRef {
+    revision_id: Option<i64>,
+    path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct MissionAgent {
+    id: String,
+    project: String,
+    project_path: String,
+    task: String,
+    prompt: String,
+    status: MissionAgentStatus,
+    created_at: String,
+    updated_at: String,
+    summary: Option<String>,
+    last_error: Option<String>,
+    revision_ids: Vec<i64>,
+    diff_refs: Vec<MissionDiffRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MissionTaskSpec {
+    project: String,
+    task: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct Mission {
+    id: String,
+    title: String,
+    source_text: String,
+    status: MissionStatus,
+    created_at: String,
+    updated_at: String,
+    agents: Vec<MissionAgent>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -410,6 +588,476 @@ async fn launch_tui(project: &Path) -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
+}
+
+async fn launch_mission_control_ui(project: &Path, mission_id: Option<&str>) -> Result<()> {
+    let mission = match mission_id {
+        Some(id) => read_mission(project, id)?,
+        None => latest_mission(project)?,
+    };
+    let settings = load_tui_settings(project);
+    let mut app = MissionControlApp {
+        mission_id: mission.id.clone(),
+        mission,
+        focus: MissionControlPanel::Agents,
+        selected_agent: 0,
+        selected_diff: 0,
+        last_refresh: Instant::now(),
+        message: mission_control_help(),
+        settings,
+    };
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+
+    let result = run_mission_control_loop(project, &mut terminal, &mut app).await;
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+    result
+}
+
+async fn run_mission_control_loop(
+    project: &Path,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut MissionControlApp,
+) -> Result<()> {
+    loop {
+        clamp_mission_control_selection(app);
+        terminal.draw(|frame| render_mission_control(frame, app))?;
+
+        if event::poll(Duration::from_millis(250))? {
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Tab => focus_next_mission_panel(app),
+                KeyCode::BackTab => focus_previous_mission_panel(app),
+                KeyCode::Char('h') => focus_left_mission_panel(app),
+                KeyCode::Char('l') => focus_right_mission_panel(app),
+                KeyCode::Char('j') => focus_down_mission_panel(app),
+                KeyCode::Char('k') => focus_up_mission_panel(app),
+                KeyCode::Char('1') => app.focus = MissionControlPanel::Main,
+                KeyCode::Char('2') => app.focus = MissionControlPanel::Agents,
+                KeyCode::Char('3') => app.focus = MissionControlPanel::Detail,
+                KeyCode::Char('4') => app.focus = MissionControlPanel::Diffs,
+                KeyCode::Up => move_mission_control_selection(app, -1),
+                KeyCode::Down => move_mission_control_selection(app, 1),
+                KeyCode::Char('r') => refresh_mission_control(project, app),
+                KeyCode::Enter => open_selected_mission_diff(project, terminal, app).await?,
+                _ => {}
+            }
+        }
+
+        if app.last_refresh.elapsed() > Duration::from_secs(3) {
+            refresh_mission_control(project, app);
+        }
+    }
+    Ok(())
+}
+
+fn render_mission_control(frame: &mut ratatui::Frame<'_>, app: &MissionControlApp) {
+    let area = frame.area();
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(8),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
+        .split(vertical[1]);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(8), Constraint::Min(8)])
+        .split(body[0]);
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(body[1]);
+
+    render_mission_control_header(frame, app, vertical[0]);
+    render_mission_main_panel(frame, app, left[0]);
+    render_mission_agents_panel(frame, app, left[1]);
+    render_mission_detail_panel(frame, app, right[0]);
+    render_mission_diffs_panel(frame, app, right[1]);
+    frame.render_widget(
+        Paragraph::new(app.message.clone()).style(Style::default().fg(app.settings.theme.muted)),
+        vertical[2],
+    );
+}
+
+fn render_mission_control_header(
+    frame: &mut ratatui::Frame<'_>,
+    app: &MissionControlApp,
+    area: Rect,
+) {
+    let title = Line::from(vec![
+        Span::styled(
+            "Airev Mission Control",
+            Style::default()
+                .fg(app.settings.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            &app.mission.id,
+            Style::default().fg(app.settings.theme.foreground),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format_mission_status(&app.mission.status),
+            status_style(format_mission_status(&app.mission.status)),
+        ),
+        Span::raw("  "),
+        Span::raw(&app.mission.title),
+    ]);
+    frame.render_widget(
+        Paragraph::new(title).alignment(Alignment::Center).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded),
+        ),
+        area,
+    );
+}
+
+fn render_mission_main_panel(frame: &mut ratatui::Frame<'_>, app: &MissionControlApp, area: Rect) {
+    let source = if app.mission.source_text.trim().is_empty() {
+        "no source text".to_string()
+    } else {
+        truncate_pretty(app.mission.source_text.trim(), 220)
+    };
+    let text = vec![
+        Line::from(format!(
+            "status: {}",
+            format_mission_status(&app.mission.status)
+        )),
+        Line::from(format!("agents: {}", app.mission.agents.len())),
+        Line::from(format!("updated: {}", app.mission.updated_at)),
+        Line::from(""),
+        Line::from(source),
+    ];
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: true })
+            .block(mission_control_block(
+                app,
+                MissionControlPanel::Main,
+                "1 MAIN",
+            )),
+        area,
+    );
+}
+
+fn render_mission_agents_panel(
+    frame: &mut ratatui::Frame<'_>,
+    app: &MissionControlApp,
+    area: Rect,
+) {
+    let items = app
+        .mission
+        .agents
+        .iter()
+        .map(|agent| {
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("{:<9}", format_mission_agent_status(&agent.status)),
+                    status_style(format_mission_agent_status(&agent.status)),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    &agent.project,
+                    Style::default()
+                        .fg(app.settings.theme.foreground)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!("  {}", truncate_pretty(&agent.task, 48))),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let mut state = ListState::default();
+    if !items.is_empty() {
+        state.select(Some(app.selected_agent.min(items.len() - 1)));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(selected_style(Style::default(), &app.settings.theme, true))
+            .block(mission_control_block(
+                app,
+                MissionControlPanel::Agents,
+                "2 AGENTS",
+            )),
+        area,
+        &mut state,
+    );
+}
+
+fn render_mission_detail_panel(
+    frame: &mut ratatui::Frame<'_>,
+    app: &MissionControlApp,
+    area: Rect,
+) {
+    let Some(agent) = selected_mission_agent(app) else {
+        frame.render_widget(
+            Paragraph::new("No agent selected").block(mission_control_block(
+                app,
+                MissionControlPanel::Detail,
+                "3 DETAIL",
+            )),
+            area,
+        );
+        return;
+    };
+    let mut lines = vec![
+        Line::from(format!("id: {}", agent.id)),
+        Line::from(format!("project: {}", agent.project)),
+        Line::from(format!("path: {}", agent.project_path)),
+        Line::from(format!(
+            "status: {}",
+            format_mission_agent_status(&agent.status)
+        )),
+        Line::from(format!("task: {}", agent.task)),
+    ];
+    if let Some(summary) = &agent.summary {
+        lines.push(Line::from(format!("summary: {summary}")));
+    }
+    if let Some(error) = &agent.last_error {
+        lines.push(Line::from(Span::styled(
+            format!("last_error: {error}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    if !agent.revision_ids.is_empty() {
+        lines.push(Line::from(format!("revisions: {:?}", agent.revision_ids)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .block(mission_control_block(
+                app,
+                MissionControlPanel::Detail,
+                "3 DETAIL",
+            )),
+        area,
+    );
+}
+
+fn render_mission_diffs_panel(frame: &mut ratatui::Frame<'_>, app: &MissionControlApp, area: Rect) {
+    let items = selected_mission_agent(app)
+        .map(|agent| {
+            if agent.diff_refs.is_empty() {
+                vec![ListItem::new("No diff refs recorded")]
+            } else {
+                agent
+                    .diff_refs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, diff)| {
+                        let label = match diff.revision_id {
+                            Some(revision_id) => {
+                                format!("[{index}] revision {revision_id}: {}", diff.path)
+                            }
+                            None => format!("[{index}] unbound: {}", diff.path),
+                        };
+                        ListItem::new(label)
+                    })
+                    .collect::<Vec<_>>()
+            }
+        })
+        .unwrap_or_else(|| vec![ListItem::new("No agent selected")]);
+    let mut state = ListState::default();
+    if selected_mission_agent(app).is_some_and(|agent| !agent.diff_refs.is_empty()) {
+        state.select(Some(app.selected_diff.min(items.len() - 1)));
+    }
+    frame.render_stateful_widget(
+        List::new(items)
+            .highlight_style(selected_style(Style::default(), &app.settings.theme, true))
+            .block(mission_control_block(
+                app,
+                MissionControlPanel::Diffs,
+                "4 DIFFS",
+            )),
+        area,
+        &mut state,
+    );
+}
+
+fn mission_control_block<'a>(
+    app: &MissionControlApp,
+    panel: MissionControlPanel,
+    title: &'a str,
+) -> Block<'a> {
+    let mut block = panel_block(title, &app.settings.theme);
+    if app.focus == panel {
+        block = block.border_style(Style::default().fg(app.settings.theme.accent));
+    }
+    block
+}
+
+fn selected_mission_agent(app: &MissionControlApp) -> Option<&MissionAgent> {
+    app.mission.agents.get(app.selected_agent)
+}
+
+fn clamp_mission_control_selection(app: &mut MissionControlApp) {
+    if app.mission.agents.is_empty() {
+        app.selected_agent = 0;
+        app.selected_diff = 0;
+        return;
+    }
+    app.selected_agent = app.selected_agent.min(app.mission.agents.len() - 1);
+    let diff_len = app.mission.agents[app.selected_agent].diff_refs.len();
+    if diff_len == 0 {
+        app.selected_diff = 0;
+    } else {
+        app.selected_diff = app.selected_diff.min(diff_len - 1);
+    }
+}
+
+fn move_mission_control_selection(app: &mut MissionControlApp, delta: isize) {
+    match app.focus {
+        MissionControlPanel::Agents => {
+            app.selected_agent = move_index(app.selected_agent, app.mission.agents.len(), delta);
+            app.selected_diff = 0;
+        }
+        MissionControlPanel::Diffs => {
+            if let Some(agent) = selected_mission_agent(app) {
+                app.selected_diff = move_index(app.selected_diff, agent.diff_refs.len(), delta);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn move_index(current: usize, len: usize, delta: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let last = len.saturating_sub(1) as isize;
+    (current as isize + delta).clamp(0, last) as usize
+}
+
+fn focus_next_mission_panel(app: &mut MissionControlApp) {
+    app.focus = match app.focus {
+        MissionControlPanel::Main => MissionControlPanel::Agents,
+        MissionControlPanel::Agents => MissionControlPanel::Detail,
+        MissionControlPanel::Detail => MissionControlPanel::Diffs,
+        MissionControlPanel::Diffs => MissionControlPanel::Main,
+    };
+}
+
+fn focus_previous_mission_panel(app: &mut MissionControlApp) {
+    app.focus = match app.focus {
+        MissionControlPanel::Main => MissionControlPanel::Diffs,
+        MissionControlPanel::Agents => MissionControlPanel::Main,
+        MissionControlPanel::Detail => MissionControlPanel::Agents,
+        MissionControlPanel::Diffs => MissionControlPanel::Detail,
+    };
+}
+
+fn focus_left_mission_panel(app: &mut MissionControlApp) {
+    app.focus = match app.focus {
+        MissionControlPanel::Detail | MissionControlPanel::Diffs => MissionControlPanel::Agents,
+        _ => app.focus,
+    };
+}
+
+fn focus_right_mission_panel(app: &mut MissionControlApp) {
+    app.focus = match app.focus {
+        MissionControlPanel::Main | MissionControlPanel::Agents => MissionControlPanel::Detail,
+        _ => app.focus,
+    };
+}
+
+fn focus_down_mission_panel(app: &mut MissionControlApp) {
+    app.focus = match app.focus {
+        MissionControlPanel::Main => MissionControlPanel::Agents,
+        MissionControlPanel::Detail => MissionControlPanel::Diffs,
+        _ => app.focus,
+    };
+}
+
+fn focus_up_mission_panel(app: &mut MissionControlApp) {
+    app.focus = match app.focus {
+        MissionControlPanel::Agents => MissionControlPanel::Main,
+        MissionControlPanel::Diffs => MissionControlPanel::Detail,
+        _ => app.focus,
+    };
+}
+
+fn refresh_mission_control(project: &Path, app: &mut MissionControlApp) {
+    match read_mission(project, &app.mission_id) {
+        Ok(mission) => {
+            app.mission = mission;
+            app.last_refresh = Instant::now();
+            app.message = mission_control_help();
+        }
+        Err(error) => {
+            app.message = format!("refresh failed: {error}");
+        }
+    }
+}
+
+async fn open_selected_mission_diff(
+    project: &Path,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut MissionControlApp,
+) -> Result<()> {
+    if app.focus != MissionControlPanel::Diffs {
+        return Ok(());
+    }
+    let Some(agent) = selected_mission_agent(app) else {
+        app.message = "No agent selected.".to_string();
+        return Ok(());
+    };
+    if agent.diff_refs.is_empty() {
+        app.message = "Selected agent has no diff refs.".to_string();
+        return Ok(());
+    }
+    let agent_id = agent.id.clone();
+    let diff_index = app.selected_diff;
+    suspend_tui(terminal)?;
+    let result = mission_open_diff_command(
+        project,
+        &app.mission_id,
+        &agent_id,
+        diff_index,
+        true,
+        "code",
+    )
+    .await;
+    println!("\nPress Enter to return to Mission Control...");
+    let mut line = String::new();
+    let _ = io::stdin().read_line(&mut line);
+    resume_tui(terminal)?;
+    match result {
+        Ok(()) => app.message = format!("Opened diff {diff_index} for {agent_id}."),
+        Err(error) => app.message = format!("open diff failed: {error}"),
+    }
+    Ok(())
+}
+
+fn mission_control_help() -> String {
+    "keys: q quit · tab/shift-tab cycle · h/j/k/l focus · 1-4 panels · ↑/↓ select · r refresh · enter open selected diff".to_string()
+}
+
+fn status_style(status: &str) -> Style {
+    match status {
+        "complete" | "reviewed" => Style::default().fg(Color::Green),
+        "failed" | "blocked" => Style::default().fg(Color::Red),
+        "waiting" | "unreviewed" => Style::default().fg(Color::Yellow),
+        "running" => Style::default().fg(Color::Cyan),
+        _ => Style::default(),
+    }
 }
 
 fn load_tui_settings(project: &Path) -> TuiSettings {
@@ -552,6 +1200,11 @@ impl AirevConfigFile {
             self.themes
                 .get_or_insert_with(BTreeMap::new)
                 .extend(next_themes);
+        }
+        if let Some(next_projects) = next.projects {
+            self.projects
+                .get_or_insert_with(BTreeMap::new)
+                .extend(next_projects);
         }
     }
 }
@@ -2315,6 +2968,547 @@ async fn status(project: &Path) -> Result<()> {
     Ok(())
 }
 
+async fn handle_mission_command(project: &Path, command: MissionCommand) -> Result<()> {
+    match command {
+        MissionCommand::Start {
+            title,
+            text,
+            text_file,
+            tasks,
+        } => start_mission(project, title, text, text_file, tasks),
+        MissionCommand::List => list_mission_command(project),
+        MissionCommand::Show { mission } => show_mission_command(project, &mission),
+        MissionCommand::Status { mission } => status_mission_command(project, mission.as_deref()),
+        MissionCommand::UpdateAgent {
+            mission,
+            agent,
+            status,
+            summary,
+            error,
+            revisions,
+            diffs,
+        } => update_mission_agent_command(
+            project, &mission, &agent, status, summary, error, revisions, diffs,
+        ),
+        MissionCommand::Diffs { mission, agent } => {
+            mission_diffs_command(project, &mission, agent.as_deref())
+        }
+        MissionCommand::OpenDiff {
+            mission,
+            agent,
+            diff_index,
+            terminal,
+            editor,
+        } => {
+            mission_open_diff_command(project, &mission, &agent, diff_index, terminal, &editor)
+                .await
+        }
+        MissionCommand::Wm { mission } => {
+            launch_mission_control_ui(project, mission.as_deref()).await
+        }
+    }
+}
+
+fn start_mission(
+    project: &Path,
+    title: Option<String>,
+    text: Option<String>,
+    text_file: Option<PathBuf>,
+    explicit_tasks: Vec<String>,
+) -> Result<()> {
+    let source_text = read_text_arg(text, text_file)?.unwrap_or_default();
+    let registry = load_project_registry(project)?;
+    let task_specs = parse_mission_tasks(&registry, &source_text, &explicit_tasks)?;
+    let mission_id = next_mission_id(project)?;
+    let mission_title = title.unwrap_or_else(|| {
+        if source_text.trim().is_empty() {
+            "Mission Control run".to_string()
+        } else {
+            title_from_prompt(&source_text)
+        }
+    });
+    let now = Utc::now().to_rfc3339();
+    let mut agents = Vec::new();
+
+    for (index, spec) in task_specs.iter().enumerate() {
+        let registered = registry.resolve(&spec.project)?;
+        let agent_id = mission_agent_id(index, &registered.name);
+        agents.push(MissionAgent {
+            id: agent_id,
+            project: registered.name.clone(),
+            project_path: registered.path.display().to_string(),
+            task: spec.task.clone(),
+            prompt: build_mission_agent_prompt(
+                &mission_title,
+                &source_text,
+                registered,
+                &spec.task,
+            ),
+            status: MissionAgentStatus::Pending,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            summary: None,
+            last_error: None,
+            revision_ids: Vec::new(),
+            diff_refs: Vec::new(),
+        });
+    }
+
+    let mission = Mission {
+        id: mission_id,
+        title: mission_title,
+        source_text,
+        status: MissionStatus::Running,
+        created_at: now.clone(),
+        updated_at: now,
+        agents,
+    };
+
+    write_mission(project, &mission)?;
+    println!("Mission {} created: {}", mission.id, mission.title);
+    for agent in &mission.agents {
+        println!(
+            "  {}  {:<12}  {}",
+            agent.id,
+            format_mission_agent_status(&agent.status),
+            agent.project
+        );
+        println!("      {}", agent.task);
+    }
+    Ok(())
+}
+
+fn list_mission_command(project: &Path) -> Result<()> {
+    let missions = list_missions(project)?;
+    if missions.is_empty() {
+        println!("No Airev missions recorded.");
+        return Ok(());
+    }
+    for mission in missions {
+        println!(
+            "{}  {:<9}  {:>2} agent(s)  {}  {}",
+            mission.id,
+            format_mission_status(&mission.status),
+            mission.agents.len(),
+            mission.updated_at,
+            mission.title
+        );
+    }
+    Ok(())
+}
+
+fn show_mission_command(project: &Path, mission_id: &str) -> Result<()> {
+    let mission = read_mission(project, mission_id)?;
+    print_mission_detail(&mission, true);
+    Ok(())
+}
+
+fn status_mission_command(project: &Path, mission_id: Option<&str>) -> Result<()> {
+    let mission = match mission_id {
+        Some(id) => read_mission(project, id)?,
+        None => latest_mission(project)?,
+    };
+    print_mission_detail(&mission, false);
+    Ok(())
+}
+
+fn update_mission_agent_command(
+    project: &Path,
+    mission_id: &str,
+    agent_id: &str,
+    status: Option<MissionAgentStatusArg>,
+    summary: Option<String>,
+    error: Option<String>,
+    revisions: Vec<i64>,
+    diffs: Vec<String>,
+) -> Result<()> {
+    let mut mission = read_mission(project, mission_id)?;
+    let now = Utc::now().to_rfc3339();
+    let agent_status = {
+        let agent = mission
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == agent_id)
+            .ok_or_else(|| anyhow!("Mission `{mission_id}` has no agent `{agent_id}`"))?;
+
+        if let Some(next_status) = status {
+            agent.status = next_status.into();
+        }
+        if let Some(summary) = summary {
+            agent.summary = Some(summary);
+        }
+        if let Some(error) = error {
+            agent.last_error = Some(error);
+        }
+        if !revisions.is_empty() {
+            agent.revision_ids = revisions;
+        }
+        if !diffs.is_empty() {
+            agent.diff_refs = parse_mission_diff_refs(&diffs)?;
+        }
+        agent.updated_at = now.clone();
+        agent.status.clone()
+    };
+    mission.updated_at = now;
+    refresh_mission_status(&mut mission);
+    write_mission(project, &mission)?;
+    println!(
+        "Mission {} agent {} updated: {}",
+        mission.id,
+        agent_id,
+        format_mission_agent_status(&agent_status)
+    );
+    Ok(())
+}
+
+fn mission_diffs_command(project: &Path, mission_id: &str, agent_id: Option<&str>) -> Result<()> {
+    let mission = read_mission(project, mission_id)?;
+    let agents = mission_agents_for_diff_command(&mission, agent_id)?;
+    let mut found = false;
+
+    for agent in agents {
+        println!("{}  {}  {}", agent.id, agent.project, agent.project_path);
+        if agent.diff_refs.is_empty() {
+            println!("  no diff refs recorded");
+            continue;
+        }
+        found = true;
+        for (index, diff) in agent.diff_refs.iter().enumerate() {
+            match diff.revision_id {
+                Some(revision_id) => println!("  [{index}] revision {revision_id}: {}", diff.path),
+                None => println!("  [{index}] unbound: {}", diff.path),
+            }
+        }
+    }
+
+    if !found {
+        println!("No diff refs recorded for mission {mission_id}.");
+    }
+    Ok(())
+}
+
+async fn mission_open_diff_command(
+    project: &Path,
+    mission_id: &str,
+    agent_id: &str,
+    diff_index: usize,
+    terminal: bool,
+    editor: &str,
+) -> Result<()> {
+    let mission = read_mission(project, mission_id)?;
+    let agent = mission_agent(&mission, agent_id)?;
+    let diff = agent.diff_refs.get(diff_index).ok_or_else(|| {
+        anyhow!("Mission `{mission_id}` agent `{agent_id}` has no diff index {diff_index}")
+    })?;
+    let revision_id = diff.revision_id.ok_or_else(|| {
+        anyhow!(
+            "Mission `{mission_id}` agent `{agent_id}` diff index {diff_index} is not bound to a revision id"
+        )
+    })?;
+    let agent_project = PathBuf::from(&agent.project_path);
+    if !agent_project.join(STORE_DIR).join(DB_FILE).exists() {
+        bail!(
+            "Agent project `{}` is not an initialized Airev project",
+            agent.project_path
+        );
+    }
+    let revision = revision_id.to_string();
+    if terminal {
+        print_terminal_diff(&agent_project, &revision, &diff.path).await
+    } else {
+        open_diff(&agent_project, &revision, &diff.path, editor).await
+    }
+}
+
+fn mission_agents_for_diff_command<'a>(
+    mission: &'a Mission,
+    agent_id: Option<&str>,
+) -> Result<Vec<&'a MissionAgent>> {
+    match agent_id {
+        Some(agent_id) => Ok(vec![mission_agent(mission, agent_id)?]),
+        None => Ok(mission.agents.iter().collect()),
+    }
+}
+
+fn mission_agent<'a>(mission: &'a Mission, agent_id: &str) -> Result<&'a MissionAgent> {
+    mission
+        .agents
+        .iter()
+        .find(|agent| agent.id == agent_id)
+        .ok_or_else(|| anyhow!("Mission `{}` has no agent `{agent_id}`", mission.id))
+}
+
+fn parse_mission_tasks(
+    registry: &ProjectRegistry,
+    source_text: &str,
+    explicit_tasks: &[String],
+) -> Result<Vec<MissionTaskSpec>> {
+    let mut tasks = Vec::new();
+    for task in explicit_tasks {
+        tasks.push(parse_explicit_mission_task(registry, task)?);
+    }
+
+    for fragment in source_text.lines().flat_map(|line| line.split(';')) {
+        let fragment = fragment.trim();
+        if fragment.is_empty() {
+            continue;
+        }
+        if let Some(task) = parse_prefixed_mission_task(registry, fragment)? {
+            tasks.push(task);
+        }
+    }
+
+    if tasks.is_empty() {
+        bail!(
+            "No project tasks found. Use --task project=task or text lines like `Airev: build X`. Known projects: {}",
+            registry.names().join(", ")
+        );
+    }
+    Ok(tasks)
+}
+
+fn parse_explicit_mission_task(registry: &ProjectRegistry, value: &str) -> Result<MissionTaskSpec> {
+    let (project, task) = value
+        .split_once('=')
+        .or_else(|| value.split_once(':'))
+        .ok_or_else(|| {
+            anyhow!("Mission task `{value}` must use `project=task` or `project:task`")
+        })?;
+    let registered = registry.resolve(project.trim())?;
+    let task = task.trim();
+    if task.is_empty() {
+        bail!(
+            "Mission task for project `{}` cannot be empty",
+            registered.name
+        );
+    }
+    Ok(MissionTaskSpec {
+        project: registered.name.clone(),
+        task: task.to_string(),
+    })
+}
+
+fn parse_prefixed_mission_task(
+    registry: &ProjectRegistry,
+    fragment: &str,
+) -> Result<Option<MissionTaskSpec>> {
+    let Some((project_name, task)) = fragment.split_once(':') else {
+        return Ok(None);
+    };
+    let project_name = project_name.trim();
+    if project_name.is_empty() {
+        return Ok(None);
+    }
+    let Ok(registered) = registry.resolve(project_name) else {
+        return Ok(None);
+    };
+    let task = task.trim();
+    if task.is_empty() {
+        bail!(
+            "Mission task for project `{}` cannot be empty",
+            registered.name
+        );
+    }
+    Ok(Some(MissionTaskSpec {
+        project: registered.name.clone(),
+        task: task.to_string(),
+    }))
+}
+
+fn build_mission_agent_prompt(
+    mission_title: &str,
+    source_text: &str,
+    project: &RegisteredProject,
+    task: &str,
+) -> String {
+    format!(
+        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nWork autonomously inside this project only. Preserve context in local GSD/Airev artifacts, verify before completion, and report summary, status, revision IDs, and diff paths back to the MAIN agent.",
+        project.name,
+        project.path.display(),
+        source_text.trim()
+    )
+}
+
+fn next_mission_id(project: &Path) -> Result<String> {
+    let base = format!("mission-{}", Utc::now().format("%Y%m%d%H%M%S"));
+    for suffix in 0..1000 {
+        let candidate = if suffix == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{suffix:03}")
+        };
+        if !mission_path(project, &candidate)?.exists() {
+            return Ok(candidate);
+        }
+    }
+    bail!("Could not allocate a unique mission id for {base}")
+}
+
+fn mission_agent_id(index: usize, project: &str) -> String {
+    let slug = project
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    format!("agent-{:02}-{}", index + 1, slug)
+}
+
+fn latest_mission(project: &Path) -> Result<Mission> {
+    let missions = list_missions(project)?;
+    missions
+        .into_iter()
+        .last()
+        .ok_or_else(|| anyhow!("No Airev missions recorded."))
+}
+
+fn print_mission_detail(mission: &Mission, include_prompts: bool) {
+    println!(
+        "{}  {}  {}",
+        mission.id,
+        format_mission_status(&mission.status),
+        mission.title
+    );
+    println!("updated: {}", mission.updated_at);
+    if !mission.source_text.trim().is_empty() {
+        println!(
+            "source: {}",
+            truncate_pretty(mission.source_text.trim(), 120)
+        );
+    }
+    for agent in &mission.agents {
+        println!(
+            "\n{}  {}  {}",
+            agent.id,
+            format_mission_agent_status(&agent.status),
+            agent.project
+        );
+        println!("path: {}", agent.project_path);
+        println!("task: {}", agent.task);
+        if let Some(summary) = &agent.summary {
+            println!("summary: {}", summary);
+        }
+        if let Some(error) = &agent.last_error {
+            println!("last_error: {}", error);
+        }
+        if !agent.revision_ids.is_empty() {
+            println!("revisions: {:?}", agent.revision_ids);
+        }
+        if !agent.diff_refs.is_empty() {
+            let refs = agent
+                .diff_refs
+                .iter()
+                .map(|diff| match diff.revision_id {
+                    Some(revision_id) => format!("{}:{}", revision_id, diff.path),
+                    None => diff.path.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("diffs: {refs}");
+        }
+        if include_prompts {
+            println!("prompt:\n{}", agent.prompt);
+        }
+    }
+}
+
+fn refresh_mission_status(mission: &mut Mission) {
+    mission.status = if mission
+        .agents
+        .iter()
+        .any(|agent| agent.status == MissionAgentStatus::Failed)
+    {
+        MissionStatus::Failed
+    } else if mission
+        .agents
+        .iter()
+        .any(|agent| agent.status == MissionAgentStatus::Blocked)
+    {
+        MissionStatus::Blocked
+    } else if mission
+        .agents
+        .iter()
+        .all(|agent| agent.status == MissionAgentStatus::Complete)
+    {
+        MissionStatus::Complete
+    } else if mission
+        .agents
+        .iter()
+        .any(|agent| agent.status == MissionAgentStatus::Waiting)
+    {
+        MissionStatus::Waiting
+    } else {
+        MissionStatus::Running
+    };
+}
+
+fn parse_mission_diff_refs(values: &[String]) -> Result<Vec<MissionDiffRef>> {
+    values
+        .iter()
+        .map(|value| {
+            if let Some((revision, path)) = value.split_once(':') {
+                if let Ok(revision_id) = revision.parse::<i64>() {
+                    if path.trim().is_empty() {
+                        bail!("Diff ref `{value}` has an empty path");
+                    }
+                    return Ok(MissionDiffRef {
+                        revision_id: Some(revision_id),
+                        path: path.trim().to_string(),
+                    });
+                }
+            }
+            if value.trim().is_empty() {
+                bail!("Diff ref cannot be empty");
+            }
+            Ok(MissionDiffRef {
+                revision_id: None,
+                path: value.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn format_mission_status(status: &MissionStatus) -> &'static str {
+    match status {
+        MissionStatus::Draft => "draft",
+        MissionStatus::Running => "running",
+        MissionStatus::Waiting => "waiting",
+        MissionStatus::Complete => "complete",
+        MissionStatus::Failed => "failed",
+        MissionStatus::Blocked => "blocked",
+    }
+}
+
+fn format_mission_agent_status(status: &MissionAgentStatus) -> &'static str {
+    match status {
+        MissionAgentStatus::Pending => "pending",
+        MissionAgentStatus::Running => "running",
+        MissionAgentStatus::Waiting => "waiting",
+        MissionAgentStatus::Complete => "complete",
+        MissionAgentStatus::Failed => "failed",
+        MissionAgentStatus::Blocked => "blocked",
+    }
+}
+
+impl From<MissionAgentStatusArg> for MissionAgentStatus {
+    fn from(value: MissionAgentStatusArg) -> Self {
+        match value {
+            MissionAgentStatusArg::Pending => MissionAgentStatus::Pending,
+            MissionAgentStatusArg::Running => MissionAgentStatus::Running,
+            MissionAgentStatusArg::Waiting => MissionAgentStatus::Waiting,
+            MissionAgentStatusArg::Complete => MissionAgentStatus::Complete,
+            MissionAgentStatusArg::Failed => MissionAgentStatus::Failed,
+            MissionAgentStatusArg::Blocked => MissionAgentStatus::Blocked,
+        }
+    }
+}
+
 fn install_gsd_adapter(start: &Path) -> Result<()> {
     let source = find_gsd_adapter_source_dir(start)?;
     let destination = gsd_adapter_install_dir()?;
@@ -2725,6 +3919,7 @@ async fn mark_revision_reviewed(pool: &SqlitePool, revision: &str) -> Result<()>
 fn ensure_store_dirs(project: &Path) -> Result<()> {
     fs::create_dir_all(project.join(STORE_DIR).join(SNAPSHOTS_DIR))?;
     fs::create_dir_all(project.join(STORE_DIR).join(RUNTIME_DIR))?;
+    fs::create_dir_all(missions_dir(project))?;
     Ok(())
 }
 
@@ -3044,6 +4239,139 @@ fn write_active_turn(project: &Path, turn: &ActiveTurn) -> Result<()> {
     Ok(())
 }
 
+fn missions_dir(project: &Path) -> PathBuf {
+    project.join(STORE_DIR).join(RUNTIME_DIR).join(MISSIONS_DIR)
+}
+
+fn mission_path(project: &Path, mission_id: &str) -> Result<PathBuf> {
+    validate_store_id(mission_id, "mission id")?;
+    Ok(missions_dir(project).join(format!("{mission_id}.json")))
+}
+
+fn write_mission(project: &Path, mission: &Mission) -> Result<()> {
+    ensure_store_dirs(project)?;
+    fs::write(
+        mission_path(project, &mission.id)?,
+        serde_json::to_string_pretty(mission)?,
+    )?;
+    Ok(())
+}
+
+fn read_mission(project: &Path, mission_id: &str) -> Result<Mission> {
+    let path = mission_path(project, mission_id)?;
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read mission `{mission_id}`"))?;
+    serde_json::from_str(&text).with_context(|| format!("Failed to parse mission `{mission_id}`"))
+}
+
+fn list_missions(project: &Path) -> Result<Vec<Mission>> {
+    let dir = missions_dir(project);
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut missions = Vec::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(OsStr::to_str) != Some("json") {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read mission file {}", path.display()))?;
+        missions.push(
+            serde_json::from_str(&text)
+                .with_context(|| format!("Failed to parse mission file {}", path.display()))?,
+        );
+    }
+    missions.sort_by(|left: &Mission, right: &Mission| left.id.cmp(&right.id));
+    Ok(missions)
+}
+
+fn load_project_registry(project: &Path) -> Result<ProjectRegistry> {
+    let config = load_merged_config(project);
+    let mut registry = ProjectRegistry::default();
+
+    if let Some(projects) = config.projects {
+        for (name, configured) in projects {
+            let resolved_path = resolve_registry_project_path(project, &configured.path)
+                .with_context(|| format!("Invalid path for project `{name}`"))?;
+            registry.projects.insert(
+                name.clone(),
+                RegisteredProject {
+                    name,
+                    path: resolved_path,
+                    description: configured.description,
+                },
+            );
+        }
+    }
+
+    if registry.projects.is_empty() {
+        let name = project
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or("current")
+            .to_string();
+        registry.projects.insert(
+            name.clone(),
+            RegisteredProject {
+                name,
+                path: project.to_path_buf(),
+                description: Some("Current Airev project".to_string()),
+            },
+        );
+    }
+
+    Ok(registry)
+}
+
+impl ProjectRegistry {
+    fn names(&self) -> Vec<String> {
+        self.projects.keys().cloned().collect()
+    }
+
+    fn resolve(&self, name: &str) -> Result<&RegisteredProject> {
+        if let Some(project) = self.projects.get(name) {
+            return Ok(project);
+        }
+        let lowered = name.to_ascii_lowercase();
+        self.projects
+            .iter()
+            .find(|(candidate, _)| candidate.to_ascii_lowercase() == lowered)
+            .map(|(_, project)| project)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Unknown Airev project `{name}`. Known projects: {}",
+                    self.names().join(", ")
+                )
+            })
+    }
+}
+
+fn validate_store_id(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("{label} cannot be empty");
+    }
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return Ok(());
+    }
+    bail!("{label} `{value}` may only contain letters, numbers, dashes, and underscores")
+}
+
+fn resolve_registry_project_path(base_project: &Path, input: &str) -> Result<PathBuf> {
+    let raw = Path::new(input);
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        base_project.join(raw)
+    };
+    Ok(lexical_normalize(&joined))
+}
+
 fn remove_active_turn(project: &Path) -> Result<()> {
     let path = active_turn_path(project);
     if path.exists() {
@@ -3246,5 +4574,230 @@ mod tests {
         assert_eq!(theme.background, Color::Reset);
         assert_eq!(theme.foreground, Color::Reset);
         assert_eq!(theme.accent, Color::Rgb(0x11, 0x22, 0x33));
+    }
+
+    #[test]
+    fn mission_store_round_trips_missions() {
+        let project = temp_project("mission-round-trip");
+        let now = "2026-06-24T00:00:00Z".to_string();
+        let mission = Mission {
+            id: "mission_001".to_string(),
+            title: "Demo mission".to_string(),
+            source_text: "Airev: build mission control".to_string(),
+            status: MissionStatus::Running,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            agents: vec![MissionAgent {
+                id: "agent_001".to_string(),
+                project: "airev".to_string(),
+                project_path: project.display().to_string(),
+                task: "Build registry".to_string(),
+                prompt: "Work on S01".to_string(),
+                status: MissionAgentStatus::Pending,
+                created_at: now.clone(),
+                updated_at: now,
+                summary: None,
+                last_error: None,
+                revision_ids: vec![7],
+                diff_refs: vec![MissionDiffRef {
+                    revision_id: Some(7),
+                    path: "src/main.rs".to_string(),
+                }],
+            }],
+        };
+
+        write_mission(&project, &mission).expect("mission writes");
+        let read_back = read_mission(&project, "mission_001").expect("mission reads");
+        assert_eq!(read_back, mission);
+
+        let listed = list_missions(&project).expect("missions list");
+        assert_eq!(listed, vec![mission]);
+
+        fs::remove_dir_all(project).ok();
+    }
+
+    #[test]
+    fn mission_store_rejects_path_like_ids() {
+        let project = temp_project("mission-invalid-id");
+        let result = mission_path(&project, "../escape");
+
+        assert!(result.is_err());
+        fs::remove_dir_all(project).ok();
+    }
+
+    #[test]
+    fn project_registry_loads_named_projects_from_config() {
+        let project = temp_project("registry");
+        write_project_registry_config(
+            &project,
+            "[projects.airev]\npath = \"../Airev\"\ndescription = \"Mission Control repo\"\n",
+        );
+
+        let registry = load_project_registry(&project).expect("registry loads");
+        let airev = registry.resolve("airev").expect("project exists");
+
+        assert_eq!(airev.name, "airev");
+        assert_eq!(airev.description.as_deref(), Some("Mission Control repo"));
+        assert!(airev.path.ends_with("Airev"));
+        assert_eq!(registry.names(), vec!["airev".to_string()]);
+
+        fs::remove_dir_all(project).ok();
+    }
+
+    #[test]
+    fn parse_mission_tasks_accepts_prefixed_text_and_explicit_tasks() {
+        let project = temp_project("mission-parser");
+        write_project_registry_config(
+            &project,
+            "[projects.Airev]\npath = \".\"\n\n[projects.CashPilot]\npath = \"../CashPilot\"\n",
+        );
+        let registry = load_project_registry(&project).expect("registry loads");
+
+        let tasks = parse_mission_tasks(
+            &registry,
+            "Airev: Build dispatcher\nCashPilot: Fix login",
+            &["Airev=Write tests".to_string()],
+        )
+        .expect("tasks parse");
+
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].project, "Airev");
+        assert_eq!(tasks[0].task, "Write tests");
+        assert_eq!(tasks[1].project, "Airev");
+        assert_eq!(tasks[1].task, "Build dispatcher");
+        assert_eq!(tasks[2].project, "CashPilot");
+        assert_eq!(tasks[2].task, "Fix login");
+
+        fs::remove_dir_all(project).ok();
+    }
+
+    #[test]
+    fn start_mission_creates_project_scoped_agent_records() {
+        let project = temp_project("mission-start");
+        write_project_registry_config(
+            &project,
+            "[projects.Airev]\npath = \".\"\n\n[projects.CashPilot]\npath = \"../CashPilot\"\n",
+        );
+
+        start_mission(
+            &project,
+            Some("Daily mission".to_string()),
+            Some("Airev: Add dispatcher\nCashPilot: Inspect diffs".to_string()),
+            None,
+            Vec::new(),
+        )
+        .expect("mission starts");
+
+        let missions = list_missions(&project).expect("missions list");
+        assert_eq!(missions.len(), 1);
+        let mission = &missions[0];
+        assert_eq!(mission.title, "Daily mission");
+        assert_eq!(mission.agents.len(), 2);
+        assert_eq!(mission.agents[0].id, "agent-01-airev");
+        assert_eq!(mission.agents[0].project, "Airev");
+        assert!(mission.agents[0].prompt.contains("Project path:"));
+        assert!(mission.agents[0].prompt.contains("Add dispatcher"));
+        assert_eq!(mission.agents[1].id, "agent-02-cashpilot");
+
+        fs::remove_dir_all(project).ok();
+    }
+
+    #[test]
+    fn update_mission_agent_records_status_summary_and_diffs() {
+        let project = temp_project("mission-update");
+        write_project_registry_config(&project, "[projects.Airev]\npath = \".\"\n");
+        start_mission(
+            &project,
+            Some("Update mission".to_string()),
+            Some("Airev: Update agent".to_string()),
+            None,
+            Vec::new(),
+        )
+        .expect("mission starts");
+        let mission_id = list_missions(&project).expect("missions list")[0]
+            .id
+            .clone();
+
+        update_mission_agent_command(
+            &project,
+            &mission_id,
+            "agent-01-airev",
+            Some(MissionAgentStatusArg::Complete),
+            Some("Finished with tests".to_string()),
+            None,
+            vec![42],
+            vec!["42:src/main.rs".to_string(), "README.md".to_string()],
+        )
+        .expect("agent updates");
+
+        let mission = read_mission(&project, &mission_id).expect("mission reads");
+        assert_eq!(mission.status, MissionStatus::Complete);
+        assert_eq!(mission.agents[0].status, MissionAgentStatus::Complete);
+        assert_eq!(
+            mission.agents[0].summary.as_deref(),
+            Some("Finished with tests")
+        );
+        assert_eq!(mission.agents[0].revision_ids, vec![42]);
+        assert_eq!(mission.agents[0].diff_refs.len(), 2);
+        assert_eq!(mission.agents[0].diff_refs[0].revision_id, Some(42));
+        assert_eq!(mission.agents[0].diff_refs[0].path, "src/main.rs");
+        assert_eq!(mission.agents[0].diff_refs[1].revision_id, None);
+        assert_eq!(mission.agents[0].diff_refs[1].path, "README.md");
+        mission_diffs_command(&project, &mission_id, Some("agent-01-airev"))
+            .expect("diff command lists refs");
+
+        fs::remove_dir_all(project).ok();
+    }
+
+    #[tokio::test]
+    async fn mission_open_diff_rejects_unbound_diff_refs() {
+        let project = temp_project("mission-open-diff");
+        write_project_registry_config(&project, "[projects.Airev]\npath = \".\"\n");
+        start_mission(
+            &project,
+            Some("Open diff mission".to_string()),
+            Some("Airev: Update agent".to_string()),
+            None,
+            Vec::new(),
+        )
+        .expect("mission starts");
+        let mission_id = list_missions(&project).expect("missions list")[0]
+            .id
+            .clone();
+        update_mission_agent_command(
+            &project,
+            &mission_id,
+            "agent-01-airev",
+            None,
+            None,
+            None,
+            Vec::new(),
+            vec!["README.md".to_string()],
+        )
+        .expect("agent updates");
+
+        let result =
+            mission_open_diff_command(&project, &mission_id, "agent-01-airev", 0, true, "code")
+                .await;
+
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("not bound to a revision id"));
+        fs::remove_dir_all(project).ok();
+    }
+
+    fn write_project_registry_config(project: &Path, contents: &str) {
+        let store = project.join(STORE_DIR);
+        fs::create_dir_all(&store).expect("store dir");
+        fs::write(store.join("config.toml"), contents).expect("config writes");
+    }
+
+    fn temp_project(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "airev-test-{label}-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&path).expect("temp project dir");
+        path
     }
 }
