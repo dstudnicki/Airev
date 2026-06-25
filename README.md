@@ -1,232 +1,200 @@
-# Airev
+# Patchbay
 
-Airev is a local AI revision journal for coding-agent work. It records AI turns, tracks changed files, and gives you a terminal UI for reviewing what changed before you trust or keep it.
+Patchbay is a local tiling control surface for coding-agent work. The short global `pb` command opens a Mission Control workspace; project-local `.ai-revisions/` storage records turns, snapshots, diffs, and review state.
 
-Airev is project-local by default. It stores runtime data in an ignored local directory and does not require a hosted service.
+Patchbay now has four connected pieces:
 
-## Install from source
+- **Chat composer**: describe an app and desired features; Patchbay turns that into mission agents.
+- **Hierarchical agent tree**: root agents can create child agents, so the main workspace stays readable.
+- **Tiled WM shell**: agents are shown as tiles with status, profile, child count, and live terminal output.
+- **Loop runner**: live agents run in tmux windows controlled by Patchbay; batch mode still exists for non-interactive runs.
 
-Prerequisites:
-
-- Rust and Cargo
-- GSD/pi, if you want the slash-command adapter
-
-From the Airev checkout:
+## Install
 
 ```bash
 cargo install --path . --force
+pb --help
 ```
 
-Verify the binary is available:
+## Configure projects
 
-```bash
-airev --help
-```
-
-## Install the GSD adapter
-
-Install the Airev adapter into the global GSD/pi extension directory:
-
-```bash
-airev gsd install
-```
-
-Expected output:
-
-```txt
-Airev GSD adapter installed.
-Restart or reload GSD once.
-Then run /airev-init in a project.
-```
-
-Restart GSD or run its reload command once so the adapter is discovered.
-
-Check adapter status:
-
-```bash
-airev gsd status
-```
-
-Example output:
-
-```txt
-Airev binary: ok
-GSD adapter: installed
-GSD adapter path: ~/.pi/agent/extensions/airev
-Project initialized: yes
-Active project DB: .ai-revisions/db.sqlite
-```
-
-## Initialize a project
-
-In each project you want Airev to track, initialize storage once:
-
-```bash
-cd my-project
-airev init
-```
-
-Or, after installing and reloading the GSD adapter, run this inside GSD:
-
-```txt
-/airev-init
-```
-
-Both paths initialize the same project-local Airev storage.
-
-## Basic CLI usage
-
-Show revision status:
-
-```bash
-airev status
-```
-
-List recorded revisions:
-
-```bash
-airev revisions
-```
-
-Open the terminal UI:
-
-```bash
-airev
-```
-
-Show a terminal diff for a recorded revision file:
-
-```bash
-airev diff REVISION PATH --terminal
-```
-
-Mark a revision as reviewed:
-
-```bash
-airev reviewed REVISION
-```
-
-## GSD slash commands
-
-After the adapter is installed and GSD is reloaded, these commands are available inside GSD:
-
-```txt
-/airev-init
-/airev-status
-/airev-revisions
-/airev-mission-start Airev: build X; CashPilot: fix Y
-/airev-mission-list
-/airev-mission-status [mission-id]
-/airev-mission-show <mission-id>
-/airev-mission-update-agent <mission-id> <agent-id> --status complete --summary "..."
-```
-
-The adapter also records GSD agent turns automatically for initialized projects.
-
-## Mission Control
-
-Airev can persist text-only multi-project missions. Voice input is intentionally out of scope; a speech-to-text layer can feed the same text commands later.
-
-Configure named projects in `.ai-revisions/config.toml` or `~/.config/airev/config.toml`:
+Patchbay reads global config from `~/.config/patchbay/config.toml` or `$XDG_CONFIG_HOME/patchbay/config.toml`.
+The old `~/.config/airev/config.toml` path is still read as a compatibility fallback.
 
 ```toml
-[projects.Airev]
-path = "/home/me/Dev/Airev"
-description = "Mission Control repo"
+[projects.cashpilot]
+path = "/path/to/CashPilot"
+description = "Finance app"
 
-[projects.CashPilot]
-path = "/home/me/Dev/CashPilot"
+[projects.patchbay]
+path = "/path/to/Patchbay"
+description = "Agent mission control"
 ```
 
-Create a mission from project-prefixed text:
+## Open Mission Control
 
 ```bash
-airev mission start --title "Daily mission" --text "Airev: add dispatcher; CashPilot: inspect login diffs"
+pb
 ```
 
-Or pass explicit project tasks:
+Important keys:
+
+- `c` opens the chat composer
+- `f` toggles the fast profile for new GSD sessions
+- `Enter` in composer creates a mission and immediately launches visible root-agent GSD terminals
+- arrow keys move focus between tiles/lists
+- `i` sends keyboard input to the focused GSD terminal; `Esc` returns to the WM
+- `Enter` on an agent tile enters its child-agent workspace, if it has children
+- `Esc` moves back up one child-agent workspace
+- `r` refreshes mission state
+- `s` manually starts a GSD terminal for the focused agent, useful for old pending missions
+- `d` opens initialized local revision projects
+- `q` quits
+
+The workspace is hierarchical: the root view shows top-level agents; child agents are visible only after entering their parent agent workspace.
+
+## Compose from the CLI
 
 ```bash
-airev mission start --task "Airev=Add dispatcher" --task "CashPilot=Inspect login diffs"
+pb compose --text "cashpilot: onboarding, billing fixes, CSV export"
 ```
 
-Inspect and update mission agents:
+Run immediately with the fast profile:
 
 ```bash
-airev mission list
-airev mission status <mission-id>
-airev mission show <mission-id>
-airev mission update-agent <mission-id> <agent-id> --status complete --summary "Verified" --revision 18 --diff "18:src/main.rs"
+pb compose --text "cashpilot: onboarding, billing fixes, CSV export" --run --fast
 ```
 
-Mission JSON is stored under `.ai-revisions/runtime/missions/` so MAIN/LEAD agents, GSD commands, and the terminal UI can share the same state.
+With explicit `project: feature one, feature two` syntax, this creates one root agent per listed feature and initializes `.ai-revisions/` in the target project when needed.
 
-## Mission diff drilldown
+With natural multi-project text, Patchbay creates one root orchestrator agent and nests mentioned projects as child agents under it. Example: `Odpal projekt Airev i CashPilot...` becomes one Patchbay root tile with Airev and CashPilot child tiles inside that workspace.
 
-Mission agents can point at existing Airev revision diffs. List available refs:
+## Mission commands
 
 ```bash
-airev mission diffs <mission-id>
-airev mission diffs <mission-id> <agent-id>
+pb mission list
+pb mission status
+pb mission show <mission-id>
+pb mission run <mission-id> [agent-id]
+pb mission run <mission-id> --all --fast
+pb mission add-agent <mission-id> --parent <agent-id> --project cashpilot --task "write tests" --fast
+pb mission update-agent <mission-id> <agent-id> --status complete --summary "done"
 ```
 
-Open a stored diff through the existing Airev diff renderer:
+Child agents are attached under their parent and appear inside that parent workspace, not as noisy root tiles.
 
-```bash
-airev mission open-diff <mission-id> <agent-id> 0 --terminal
-airev mission open-diff <mission-id> <agent-id> 0 --editor code
-```
+## Runner profiles
 
-The diff index is shown by `airev mission diffs`. If a ref is stale or not bound to a revision ID, Airev returns an explicit error instead of silently opening the wrong file.
-
-## Mission Control window manager
-
-Open the non-voice terminal dashboard for the latest mission or a specific mission:
-
-```bash
-airev mission wm
-airev mission wm <mission-id>
-```
-
-The dashboard is a tiling-style view with MAIN, AGENTS, DETAIL, and DIFFS panels. It is intentionally terminal-native rather than a desktop window manager replacement.
-
-Keys:
+When launched from the WM by composing a mission, or manually with `s`, Patchbay starts the focused agent in a tmux window with:
 
 ```txt
-q              quit
-Tab / Shift+Tab cycle focused panel
-h / j / k / l  move focus like a tiling window manager
-1 / 2 / 3 / 4  focus MAIN / AGENTS / DETAIL / DIFFS
-Up / Down      select agent or diff in the focused list
-r              reload mission JSON from disk
-Enter          open the selected DIFFS item with the terminal diff renderer
+gsd [--model <model>] <agent-prompt>
 ```
 
-The UI shows agent status, project path, task, summary, last error, revision IDs, and diff refs. If a selected diff is stale or unbound, the footer reports the error instead of opening the wrong file.
+When launched through batch commands (`pb mission run`), Patchbay still uses non-interactive print mode for now:
 
-## Local data and git hygiene
+```txt
+gsd --print [--model <model>] <agent-prompt>
+```
 
-Airev writes project-local runtime data that should stay out of git. The default ignore rules cover:
+Each mission gets a tmux session named `patchbay-<mission-id>`, and each agent gets its own tmux window. You can inspect it outside Patchbay with:
+
+```bash
+tmux attach -t patchbay-<mission-id>
+```
+
+Fast mode uses model profile `gpt-5.5-high` by default:
+
+```bash
+pb mission run <mission-id> --all --fast
+```
+
+Overrides:
+
+```bash
+PATCHBAY_FAST_MODEL="gpt-5.5-high" pb mission run <mission-id> --fast
+PATCHBAY_MODEL="provider/model" pb mission run <mission-id>
+```
+
+For tests or custom integrations, replace the runner command entirely:
+
+```bash
+PATCHBAY_RUNNER_CMD='my-agent-cli --stdin' pb mission run <mission-id> --all
+```
+
+Patchbay passes these env vars into runner processes:
+
+- `PATCHBAY_HOME`
+- `PATCHBAY_MISSION_ID`
+- `PATCHBAY_AGENT_ID`
+- `PATCHBAY_PARENT_AGENT_ID` when nested
+- `PATCHBAY_PROJECT`
+- `PATCHBAY_PROFILE`
+
+Agent prompts include instructions for creating child agents with `pb mission add-agent` and reporting completion with `pb mission update-agent`.
+
+## Local revisions
+
+Initialize a project manually when desired:
+
+```bash
+pb init
+```
+
+Inspect local revisions:
+
+```bash
+pb status
+pb revisions
+pb diff r000020 src/app.rs
+pb reviewed r000020
+```
+
+Local revision storage remains project-local:
 
 ```txt
 .ai-revisions/
-.gsd/
-.bg-shell/
-.working-docs/
-target/
-node_modules/
+  db.sqlite
+  runtime/
+  snapshots/
+  config.toml
 ```
 
-Do not put the GSD adapter source under local runtime directories. The public adapter source ships with this repository and is installed explicitly with `airev gsd install`.
+Global Mission Control storage defaults to:
 
-## Development checks
+```txt
+~/.patchbay/
+  .ai-revisions/runtime/missions/
+```
 
-Useful checks before sharing changes:
+Set `PATCHBAY_HOME` to override the global Mission Control root.
+
+## GSD adapter
+
+Install the adapter:
 
 ```bash
-cargo fmt
-cargo check
-cargo test
-npm install --prefix adapters/gsd
-npm run --prefix adapters/gsd typecheck
+pb gsd install
 ```
+
+Slash commands:
+
+```txt
+/pb-init
+/pb-status
+/pb-revisions
+/pb-compose
+/pb-mission-start
+/pb-mission-list
+/pb-mission-status
+/pb-mission-show
+/pb-mission-run
+/pb-mission-add-agent
+/pb-mission-update-agent
+```
+
+The adapter still captures local revision turns automatically around GSD agent sessions:
+
+1. `pb turn begin --force --snapshot-baseline`
+2. `pb touch <path>` for file tool calls
+3. `pb turn end --summary ...`

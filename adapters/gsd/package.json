@@ -1,5 +1,5 @@
 {
-  "name": "airev-gsd-adapter",
+  "name": "patchbay-gsd-adapter",
   "version": "0.1.0",
   "private": true,
   "type": "module",
