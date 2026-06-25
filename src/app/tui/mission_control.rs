@@ -1131,6 +1131,11 @@ pub(crate) fn tmux_agent_shell_command(
     if let Ok(bin) = env::current_exe() {
         env_parts.push(("PATCHBAY_BIN", bin.display().to_string()));
     }
+    for key in ["XDG_CONFIG_HOME", "HOME"] {
+        if let Ok(value) = env::var(key) {
+            env_parts.push((key, value));
+        }
+    }
     if let Some(parent_id) = &agent.parent_id {
         env_parts.push(("PATCHBAY_PARENT_AGENT_ID", parent_id.clone()));
     }
