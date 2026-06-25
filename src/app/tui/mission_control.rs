@@ -45,6 +45,7 @@ pub(crate) async fn launch_mission_control_ui(
         selected_project: 0,
         launch_revision_project: None,
         compose_input: String::new(),
+        compose_agent_target: None,
         fast_profile: false,
         terminal_input: false,
         terminals: BTreeMap::new(),
@@ -136,7 +137,10 @@ pub(crate) async fn run_mission_control_loop(
             if app.focus == MissionControlPanel::Composer {
                 match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Esc => app.focus = MissionControlPanel::Main,
+                    KeyCode::Esc => {
+                        app.compose_agent_target = None;
+                        app.focus = MissionControlPanel::Main;
+                    }
                     KeyCode::Backspace => {
                         app.compose_input.pop();
                     }
@@ -151,6 +155,8 @@ pub(crate) async fn run_mission_control_loop(
                         let input = app.compose_input.trim().to_string();
                         if input.is_empty() {
                             app.message = "Compose text is empty.".to_string();
+                        } else if app.compose_agent_target.is_some() {
+                            continue_focused_agent_with_prompt(project, app, input);
                         } else {
                             match compose_mission_command(
                                 project,
@@ -171,6 +177,7 @@ pub(crate) async fn run_mission_control_loop(
                                         app.selected_agent = 0;
                                         app.selected_diff = 0;
                                         app.compose_input.clear();
+                                        app.compose_agent_target = None;
                                         app.focus = MissionControlPanel::Agents;
                                         start_visible_agent_terminals_from_ui(project, app);
                                         if app.terminals.is_empty() {
@@ -209,7 +216,12 @@ pub(crate) async fn run_mission_control_loop(
                     }
                     KeyCode::Tab => focus_next_mission_panel(app),
                     KeyCode::BackTab => focus_previous_mission_panel(app),
-                    KeyCode::Char('c') => app.focus = MissionControlPanel::Composer,
+                    KeyCode::Char('c') => {
+                        app.compose_agent_target = None;
+                        app.compose_input.clear();
+                        app.focus = MissionControlPanel::Composer;
+                    }
+                    KeyCode::Char('m') => begin_agent_followup(app),
                     KeyCode::Char('f') => {
                         app.fast_profile = !app.fast_profile;
                         app.message = format!(
@@ -463,9 +475,18 @@ pub(crate) fn render_mission_composer_panel(
     app: &MissionControlApp,
     area: Rect,
 ) {
+    let followup = app.compose_agent_target.as_deref();
     let lines = vec![
-        Line::from("Describe the app and features. Example:"),
-        Line::from("cashpilot: onboarding, billing fixes, CSV export"),
+        Line::from(if followup.is_some() {
+            "Write a follow-up prompt for the focused agent."
+        } else {
+            "Describe the app and features. Example:"
+        }),
+        Line::from(
+            followup
+                .map(|agent_id| format!("target agent: {agent_id}"))
+                .unwrap_or_else(|| "cashpilot: onboarding, billing fixes, CSV export".to_string()),
+        ),
         Line::from(""),
         Line::from(vec![
             Span::styled("fast profile: ", label_style(&app.settings.theme)),
@@ -801,9 +822,16 @@ pub(crate) fn start_focused_agent_terminal_from_ui(project: &Path, app: &mut Mis
         return;
     };
     let agent_id = agent.id.clone();
-    if app.terminals.contains_key(&agent_id) {
-        app.message = format!("agent {agent_id} already has a terminal; press i to type");
-        return;
+    if let Some(session) = app.terminals.get(&agent_id) {
+        match tmux_pane_dead_status(&session.tmux_pane) {
+            Ok(Some(_)) => {
+                app.terminals.remove(&agent_id);
+            }
+            _ => {
+                app.message = format!("agent {agent_id} already has a live terminal; press i to type");
+                return;
+            }
+        }
     }
     match start_agent_terminal(project, app, &agent_id) {
         Ok(()) => {
@@ -869,6 +897,8 @@ pub(crate) fn start_agent_terminal(
     agent.runner_profile = Some(profile.to_string());
     agent.session_id = Some(format!("tmux:{session_name}:{pane_id}"));
     agent.started_at = Some(Utc::now().to_rfc3339());
+    agent.finished_at = None;
+    agent.last_error = None;
     agent.updated_at = Utc::now().to_rfc3339();
     refresh_mission_status(&mut app.mission);
     write_mission(project, &app.mission)?;
@@ -890,11 +920,75 @@ pub(crate) fn enter_terminal_input_mode(app: &mut MissionControlApp) {
         app.message = "No agent selected.".to_string();
         return;
     };
-    if app.terminals.contains_key(&agent_id) {
-        app.terminal_input = true;
-        app.message = format!("typing into {agent_id}; Esc returns to WM");
+    if let Some(session) = app.terminals.get(&agent_id) {
+        match tmux_pane_dead_status(&session.tmux_pane) {
+            Ok(Some(_)) => {
+                app.message = format!("{agent_id} pane is dead; press m to send a follow-up or s to restart");
+            }
+            _ => {
+                app.terminal_input = true;
+                app.message = format!("typing into {agent_id}; Esc returns to WM");
+            }
+        }
     } else {
         app.message = format!("{agent_id} has no terminal yet; press s first");
+    }
+}
+
+pub(crate) fn begin_agent_followup(app: &mut MissionControlApp) {
+    let Some(agent_id) = selected_mission_agent(app).map(|agent| agent.id.clone()) else {
+        app.message = "No agent selected.".to_string();
+        return;
+    };
+    app.compose_agent_target = Some(agent_id.clone());
+    app.compose_input.clear();
+    app.focus = MissionControlPanel::Composer;
+    app.message = format!("follow-up for {agent_id}; Enter runs it, Esc cancels");
+}
+
+pub(crate) fn continue_focused_agent_with_prompt(
+    project: &Path,
+    app: &mut MissionControlApp,
+    followup: String,
+) {
+    let Some(agent_id) = app.compose_agent_target.clone() else {
+        app.message = "No follow-up target selected.".to_string();
+        return;
+    };
+    let Some(agent) = app
+        .mission
+        .agents
+        .iter_mut()
+        .find(|agent| agent.id == agent_id)
+    else {
+        app.message = format!("agent {agent_id} no longer exists");
+        return;
+    };
+
+    agent.task = format!("{}\n\nFollow-up:\n{}", agent.task, followup);
+    agent.prompt = format!(
+        "{}\n\nPatchbay follow-up from Mission Control:\n{}",
+        agent.prompt, followup
+    );
+    agent.status = MissionAgentStatus::Pending;
+    agent.summary = None;
+    agent.last_error = None;
+    agent.session_id = None;
+    agent.finished_at = None;
+    agent.updated_at = Utc::now().to_rfc3339();
+    app.terminals.remove(&agent_id);
+    refresh_mission_status(&mut app.mission);
+    if let Err(error) = write_mission(project, &app.mission) {
+        app.message = format!("failed to save follow-up: {error}");
+        return;
+    }
+
+    app.compose_input.clear();
+    app.compose_agent_target = None;
+    app.focus = MissionControlPanel::Agents;
+    match start_agent_terminal(project, app, &agent_id) {
+        Ok(()) => app.message = format!("follow-up started for {agent_id}"),
+        Err(error) => app.message = format!("follow-up saved but start failed for {agent_id}: {error}"),
     }
 }
 
@@ -1308,7 +1402,7 @@ pub(crate) fn shell_quote(value: &str) -> String {
 }
 
 pub(crate) fn mission_control_help() -> String {
-    "keys: q quit · arrows select · enter open mission/child workspace · esc mission list · c compose+launch GSD · r refresh · s start focused · i tmux input".to_string()
+    "keys: q quit · arrows select · enter open mission/child workspace · esc mission list · c new mission · m follow-up focused · s restart focused · i tmux input".to_string()
 }
 
 pub(crate) fn status_style(status: &str) -> Style {

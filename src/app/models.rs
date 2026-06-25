@@ -119,6 +119,7 @@ pub(crate) struct MissionControlApp {
     pub(crate) selected_project: usize,
     pub(crate) launch_revision_project: Option<PathBuf>,
     pub(crate) compose_input: String,
+    pub(crate) compose_agent_target: Option<String>,
     pub(crate) fast_profile: bool,
     pub(crate) terminal_input: bool,
     pub(crate) terminals: BTreeMap<String, AgentTerminalSession>,
