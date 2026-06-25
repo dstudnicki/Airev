@@ -7,7 +7,8 @@ Patchbay now has four connected pieces:
 - **Chat composer**: describe an app and desired outcome; Patchbay creates one root orchestrator agent.
 - **Hierarchical agent tree**: root agents create child agents, and child agents can create their own children.
 - **Tiled WM shell**: agents are shown as tmux-backed tiles with status, profile, child count, and live terminal output.
-- **Loop runner**: live agents run in tmux windows controlled by Patchbay; pending child agents are auto-started.
+- **Loop runner**: live agents run `gsd --print` in tmux windows controlled by Patchbay; pending child agents are auto-started.
+- **Skill presets**: each agent gets a prompt preset and recommended GSD skills based on the mission text, such as planning, frontend, debug, review, security, docs, or test work.
 
 ## Install
 
@@ -43,7 +44,7 @@ Important keys:
 - `f` toggles the fast profile for new GSD sessions
 - `Enter` in composer creates a mission and immediately launches visible root-agent GSD terminals
 - arrow keys move focus between tiles/lists
-- `i` sends keyboard input to the focused GSD terminal; `Esc` returns to the WM
+- `i` sends keyboard input to the focused tmux pane; this is mainly useful with `PATCHBAY_GSD_INTERACTIVE=1`; `Esc` returns to the WM
 - `Enter` on an agent tile enters its child-agent workspace, if it has children
 - `Esc` moves back up one child-agent workspace
 - `r` refreshes mission state
@@ -65,7 +66,9 @@ Run immediately with the fast profile:
 pb compose --text "cashpilot: onboarding, billing fixes, CSV export" --run --fast
 ```
 
-`pb compose` creates one root orchestrator agent and initializes `.ai-revisions/` in the target project when needed. The root agent decides how to split the work and can create child agents with `pb mission add-agent`. Patchbay watches mission state and automatically starts pending child agents in tmux windows.
+`pb compose` creates one root orchestrator agent and initializes `.ai-revisions/` in the target project when needed. The root agent decides how to split the work and can create child agents with `pb mission add-agent`. Patchbay watches mission state and automatically starts pending child agents in tmux windows. By default Patchbay launches agents as one-shot autonomous `gsd --print` loops so tmux lifecycle can mark panes complete or failed; set `PATCHBAY_GSD_INTERACTIVE=1` to launch an interactive GSD console instead.
+
+Each agent prompt includes a routing preset and recommended GSD skills. For example, review tasks recommend `review`, debug tasks recommend `debug-like-expert`, planning tasks recommend `decompose-into-slices`, and frontend tasks recommend `frontend-design` plus accessibility polish.
 
 ## Mission commands
 

@@ -100,6 +100,8 @@ fn mission_store_round_trips_missions() {
                 revision_id: Some(7),
                 path: "src/main.rs".to_string(),
             }],
+            prompt_preset: Some("implementation".to_string()),
+            recommended_skills: vec!["test".to_string()],
             runner_profile: None,
             session_id: None,
             started_at: None,
@@ -321,6 +323,8 @@ fn tmux_shell_command_quotes_prompt_and_env() {
         last_error: None,
         revision_ids: Vec::new(),
         diff_refs: Vec::new(),
+        prompt_preset: Some("implementation".to_string()),
+        recommended_skills: vec!["test".to_string()],
         runner_profile: None,
         session_id: None,
         started_at: None,
@@ -328,18 +332,60 @@ fn tmux_shell_command_quotes_prompt_and_env() {
         last_log: None,
     };
 
-    let command = tmux_agent_shell_command(Path::new("/tmp/patch bay"), "mission-1", &agent, "fast");
+    let command =
+        tmux_agent_shell_command(Path::new("/tmp/patch bay"), "mission-1", &agent, "fast");
 
     assert!(command.contains("PATCHBAY_HOME='/tmp/patch bay'"));
     assert!(command.contains("PATCHBAY_PARENT_AGENT_ID='agent-root'"));
-    assert!(command.contains("exec gsd"));
+    assert!(command.contains("PATCHBAY_BIN="));
+    assert!(command.contains("exec gsd --print"));
     assert!(command.contains("'Say '\\''hello'\\'' and use spaces'"));
 }
 
 #[test]
 fn tmux_names_are_sanitized() {
-    assert_eq!(tmux_session_name("mission:one/two"), "patchbay-mission-one-two");
+    assert_eq!(
+        tmux_session_name("mission:one/two"),
+        "patchbay-mission-one-two"
+    );
     assert_eq!(tmux_window_name("agent:01/demo"), "agent-01-demo");
+}
+
+#[test]
+fn skill_router_selects_frontend_and_review_presets() {
+    let frontend = classify_mission_skill_preset("", "zaplanuj mobile iOS frontend dla CashPilot");
+    assert_eq!(frontend.name, "frontend");
+    assert!(frontend.skills.contains(&"frontend-design"));
+
+    let review = classify_mission_skill_preset("", "review this pull request diff for regressions");
+    assert_eq!(review.name, "review");
+    assert!(review.skills.contains(&"review"));
+
+    let implementation = classify_mission_skill_preset("", "implement project lifecycle monitor");
+    assert_eq!(implementation.name, "implementation");
+}
+
+#[test]
+fn mission_prompt_includes_routing_preset_and_skills() {
+    let project = RegisteredProject {
+        name: "Patchbay".to_string(),
+        path: PathBuf::from("/tmp/patchbay"),
+        description: None,
+    };
+    let preset = classify_mission_skill_preset("", "debug failing tmux lifecycle");
+    let prompt = build_mission_agent_prompt(
+        "mission",
+        "debug failing tmux lifecycle",
+        &project,
+        "debug failing tmux lifecycle",
+        &preset,
+    );
+
+    assert!(prompt.contains("Patchbay routing preset: debug"));
+    assert!(
+        prompt.contains("Recommended GSD skills: debug-like-expert, test, verify-before-complete")
+    );
+    assert!(prompt.contains("${PATCHBAY_BIN:-pb} mission add-agent"));
 }
 
 #[test]
@@ -378,7 +424,10 @@ fn global_registry_discovers_project_directories_from_home_dev() {
         unsafe { env::remove_var("HOME") };
     }
 
-    assert_eq!(registry.resolve("Airev").expect("Airev discovered").path, airev);
+    assert_eq!(
+        registry.resolve("Airev").expect("Airev discovered").path,
+        airev
+    );
     assert_eq!(
         registry
             .resolve("CashPilot")
@@ -464,8 +513,15 @@ async fn run_mission_uses_runner_command_and_marks_agent_complete() {
     unsafe {
         env::set_var("PATCHBAY_RUNNER_CMD", "printf runner-ok");
     }
-    run_mission_command(&project, Some(&mission_id), Some("agent-01-airev"), false, None, false)
-        .expect("runner succeeds");
+    run_mission_command(
+        &project,
+        Some(&mission_id),
+        Some("agent-01-airev"),
+        false,
+        None,
+        false,
+    )
+    .expect("runner succeeds");
     unsafe {
         env::remove_var("PATCHBAY_RUNNER_CMD");
     }

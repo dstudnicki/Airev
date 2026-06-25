@@ -33,23 +33,32 @@ pub(crate) async fn handle_mission_command(
             task,
             title,
             fast,
-        } => add_mission_agent_command(
-            project,
-            &mission,
-            parent.as_deref(),
-            &agent_project,
-            &task,
-            title.as_deref(),
-            fast,
-        )
-        .await,
+        } => {
+            add_mission_agent_command(
+                project,
+                &mission,
+                parent.as_deref(),
+                &agent_project,
+                &task,
+                title.as_deref(),
+                fast,
+            )
+            .await
+        }
         MissionCommand::Run {
             mission,
             agent,
             all,
             profile,
             fast,
-        } => run_mission_command(project, mission.as_deref(), agent.as_deref(), all, profile, fast),
+        } => run_mission_command(
+            project,
+            mission.as_deref(),
+            agent.as_deref(),
+            all,
+            profile,
+            fast,
+        ),
         MissionCommand::Diffs { mission, agent } => {
             mission_diffs_command(project, &mission, agent.as_deref())
         }
@@ -93,6 +102,7 @@ pub(crate) async fn start_mission(
 
     for (index, spec) in task_specs.iter().enumerate() {
         let registered = registry.resolve(&spec.project)?;
+        let skill_preset = classify_mission_skill_preset(&source_text, &spec.task);
         let agent_id = mission_agent_id(index, &registered.name);
         agents.push(MissionAgent {
             id: agent_id,
@@ -105,6 +115,7 @@ pub(crate) async fn start_mission(
                 &source_text,
                 registered,
                 &spec.task,
+                &skill_preset,
             ),
             status: MissionAgentStatus::Pending,
             created_at: now.clone(),
@@ -113,6 +124,12 @@ pub(crate) async fn start_mission(
             last_error: None,
             revision_ids: Vec::new(),
             diff_refs: Vec::new(),
+            prompt_preset: Some(skill_preset.name.to_string()),
+            recommended_skills: skill_preset
+                .skills
+                .iter()
+                .map(|skill| skill.to_string())
+                .collect(),
             runner_profile: None,
             session_id: None,
             started_at: None,
@@ -175,6 +192,7 @@ pub(crate) fn create_mission_from_specs(
 
     for (index, spec) in task_specs.iter().enumerate() {
         let registered = registry.resolve(&spec.project)?;
+        let skill_preset = classify_mission_skill_preset(&source_text, &spec.task);
         agents.push(MissionAgent {
             id: mission_agent_id(index, &registered.name),
             parent_id: spec.parent_id.clone(),
@@ -186,6 +204,7 @@ pub(crate) fn create_mission_from_specs(
                 &source_text,
                 registered,
                 &spec.task,
+                &skill_preset,
             ),
             status: MissionAgentStatus::Pending,
             created_at: now.clone(),
@@ -194,6 +213,12 @@ pub(crate) fn create_mission_from_specs(
             last_error: None,
             revision_ids: Vec::new(),
             diff_refs: Vec::new(),
+            prompt_preset: Some(skill_preset.name.to_string()),
+            recommended_skills: skill_preset
+                .skills
+                .iter()
+                .map(|skill| skill.to_string())
+                .collect(),
             runner_profile: None,
             session_id: None,
             started_at: None,
@@ -321,13 +346,20 @@ pub(crate) async fn add_mission_agent_command(
     let agent_id = next_nested_agent_id(&mission, parent_id, registered, task);
     let source_text = mission.source_text.clone();
     let mission_title = title.unwrap_or(&mission.title).to_string();
+    let skill_preset = classify_mission_skill_preset(&source_text, task);
     mission.agents.push(MissionAgent {
         id: agent_id.clone(),
         parent_id: parent_id.map(str::to_string),
         project: registered.name.clone(),
         project_path: registered.path.display().to_string(),
         task: task.to_string(),
-        prompt: build_mission_agent_prompt(&mission_title, &source_text, registered, task),
+        prompt: build_mission_agent_prompt(
+            &mission_title,
+            &source_text,
+            registered,
+            task,
+            &skill_preset,
+        ),
         status: MissionAgentStatus::Pending,
         created_at: now.clone(),
         updated_at: now.clone(),
@@ -335,6 +367,12 @@ pub(crate) async fn add_mission_agent_command(
         last_error: None,
         revision_ids: Vec::new(),
         diff_refs: Vec::new(),
+        prompt_preset: Some(skill_preset.name.to_string()),
+        recommended_skills: skill_preset
+            .skills
+            .iter()
+            .map(|skill| skill.to_string())
+            .collect(),
         runner_profile: fast.then(|| "fast".to_string()),
         session_id: None,
         started_at: None,
@@ -479,6 +517,9 @@ pub(crate) fn run_agent_process(
         .env("PATCHBAY_AGENT_ID", &agent.id)
         .env("PATCHBAY_PROJECT", &agent.project)
         .env("PATCHBAY_PROFILE", profile);
+    if let Ok(bin) = env::current_exe() {
+        command.env("PATCHBAY_BIN", bin);
+    }
     if let Some(parent_id) = &agent.parent_id {
         command.env("PATCHBAY_PARENT_AGENT_ID", parent_id);
     }
@@ -510,7 +551,9 @@ pub(crate) fn run_agent_process(
 
 pub(crate) fn runner_model_for_profile(profile: &str) -> Option<String> {
     match profile {
-        "fast" => Some(env::var("PATCHBAY_FAST_MODEL").unwrap_or_else(|_| "gpt-5.5-high".to_string())),
+        "fast" => {
+            Some(env::var("PATCHBAY_FAST_MODEL").unwrap_or_else(|_| "gpt-5.5-high".to_string()))
+        }
         "default" => env::var("PATCHBAY_MODEL").ok(),
         other => Some(other.to_string()),
     }
@@ -538,7 +581,11 @@ pub(crate) fn next_nested_agent_id(
         .join("-");
     let base = match parent_id {
         Some(parent_id) => format!("{}-{}", parent_id, base_slug),
-        None => format!("agent-{:02}-{}", mission.agents.len() + 1, project.name.to_ascii_lowercase()),
+        None => format!(
+            "agent-{:02}-{}",
+            mission.agents.len() + 1,
+            project.name.to_ascii_lowercase()
+        ),
     };
     if !mission.agents.iter().any(|agent| agent.id == base) {
         return base;
@@ -567,7 +614,11 @@ pub(crate) fn slug_text(text: &str) -> String {
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
         .join("-");
-    if slug.is_empty() { "agent".to_string() } else { slug }
+    if slug.is_empty() {
+        "agent".to_string()
+    } else {
+        slug
+    }
 }
 
 pub(crate) fn list_mission_command(project: &Path) -> Result<()> {
@@ -602,7 +653,9 @@ pub(crate) fn status_mission_command(project: &Path, mission_id: Option<&str>) -
             Ok(mission) => mission,
             Err(_) => {
                 println!("No Patchbay missions recorded.");
-                println!("Create one with `pb mission start --task project=task` or open `pb` for Mission Control.");
+                println!(
+                    "Create one with `pb mission start --task project=task` or open `pb` for Mission Control."
+                );
                 return Ok(());
             }
         },
@@ -823,17 +876,159 @@ pub(crate) fn parse_prefixed_mission_task(
     }))
 }
 
+pub(crate) struct MissionSkillPreset {
+    pub(crate) name: &'static str,
+    pub(crate) skills: &'static [&'static str],
+    pub(crate) guidance: &'static str,
+}
+
+pub(crate) fn classify_mission_skill_preset(source_text: &str, task: &str) -> MissionSkillPreset {
+    let text = format!("{} {}", source_text, task).to_ascii_lowercase();
+    if contains_any(
+        &text,
+        &[
+            "security",
+            "secure",
+            "vulnerability",
+            "auth",
+            "permission",
+            "token",
+            "secret",
+        ],
+    ) {
+        return MissionSkillPreset {
+            name: "security",
+            skills: &["security-review", "best-practices", "test"],
+            guidance: "Threat-model the change, protect secrets, and verify abuse/error paths before marking work complete.",
+        };
+    }
+    if contains_any(
+        &text,
+        &[
+            "review",
+            "pull request",
+            "diff",
+            "audit",
+            "sprawdz",
+            "sprawdź",
+            "code quality",
+        ],
+    ) {
+        return MissionSkillPreset {
+            name: "review",
+            skills: &["review", "best-practices", "test"],
+            guidance: "Review the actual diff first, file concrete findings with paths, and only fix issues that are in scope.",
+        };
+    }
+    if contains_any(
+        &text,
+        &[
+            "debug", "bug", "fix", "napraw", "crash", "failure", "failed", "error",
+        ],
+    ) {
+        return MissionSkillPreset {
+            name: "debug",
+            skills: &["debug-like-expert", "test", "verify-before-complete"],
+            guidance: "Reproduce first, form hypotheses from evidence, fix root causes, then rerun the failing proof.",
+        };
+    }
+    if contains_any(
+        &text,
+        &[
+            "frontend",
+            "ui",
+            "ux",
+            "component",
+            "page",
+            "landing",
+            "dashboard",
+            "mobile",
+            "ios",
+            "swift",
+        ],
+    ) {
+        return MissionSkillPreset {
+            name: "frontend",
+            skills: &[
+                "frontend-design",
+                "make-interfaces-feel-better",
+                "accessibility",
+                "test",
+            ],
+            guidance: "Build a polished user-facing slice, verify interaction behavior, and check accessibility signals.",
+        };
+    }
+    if contains_any(
+        &text,
+        &["test", "tests", "tdd", "spec", "coverage", "regression"],
+    ) {
+        return MissionSkillPreset {
+            name: "test",
+            skills: &["tdd", "test", "verify-before-complete"],
+            guidance: "Prefer observable contracts, add or run focused tests, and keep the red-green proof visible.",
+        };
+    }
+    if contains_any(
+        &text,
+        &[
+            "doc", "docs", "readme", "proposal", "rfc", "brief", "prd", "write up", "opisz",
+        ],
+    ) {
+        return MissionSkillPreset {
+            name: "docs",
+            skills: &["write-docs", "write-milestone-brief"],
+            guidance: "Write for a fresh reader, preserve current state only, and verify paths/commands against the repo.",
+        };
+    }
+    if contains_any(
+        &text,
+        &[
+            "plan",
+            "decompose",
+            "break",
+            "slice",
+            "roadmap",
+            "milestone",
+            "zaplanuj",
+        ],
+    ) {
+        return MissionSkillPreset {
+            name: "planning",
+            skills: &[
+                "decompose-into-slices",
+                "write-milestone-brief",
+                "design-an-interface",
+            ],
+            guidance: "Turn ambiguity into thin vertical slices, retire the riskiest unknowns first, and document assumptions.",
+        };
+    }
+    MissionSkillPreset {
+        name: "implementation",
+        skills: &["test", "review", "verify-before-complete"],
+        guidance: "Implement the smallest complete vertical slice, keep changes observable, and verify before completion.",
+    }
+}
+
+pub(crate) fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
 pub(crate) fn build_mission_agent_prompt(
     mission_title: &str,
     source_text: &str,
     project: &RegisteredProject,
     task: &str,
+    skill_preset: &MissionSkillPreset,
 ) -> String {
+    let skills = skill_preset.skills.join(", ");
     format!(
-        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nYou are a Patchbay loop agent running inside GSD. Work autonomously inside this project unless you explicitly create child agents. If the task needs parallel research, implementation, review, or project-specific work, decompose it into child agents with `pb mission add-agent $PATCHBAY_MISSION_ID --parent $PATCHBAY_AGENT_ID --project <project> --task '<child task>'`. Child agents may create their own children using the same command. Use relevant GSD skills when applicable, such as decompose-into-slices, write-milestone-brief, tdd, test, review, debug-like-expert, frontend-design, or write-docs. Coordinate child work through Patchbay, inspect their results, continue looping until the original task is complete, and verify before completion. When done, report status with `pb mission update-agent $PATCHBAY_MISSION_ID $PATCHBAY_AGENT_ID --status complete --summary '<summary>'`; on failure use --status failed --error '<error>'.",
+        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nPatchbay routing preset: {}\nRecommended GSD skills: {}\nPreset guidance: {}\n\nYou are a Patchbay loop agent running inside GSD. Work autonomously inside this project unless you explicitly create child agents. If the task needs parallel research, implementation, review, or project-specific work, decompose it into child agents with `${{PATCHBAY_BIN:-pb}} mission add-agent $PATCHBAY_MISSION_ID --parent $PATCHBAY_AGENT_ID --project <project> --task '<child task>'`. Child agents may create their own children using the same command. Use the recommended GSD skills above when applicable; load their instructions before doing matching work. Coordinate child work through Patchbay, inspect their results, continue looping until the original task is complete, and verify before completion. When done, report status with `${{PATCHBAY_BIN:-pb}} mission update-agent $PATCHBAY_MISSION_ID $PATCHBAY_AGENT_ID --status complete --summary '<summary>'`; on failure use --status failed --error '<error>'.",
         project.name,
         project.path.display(),
-        source_text.trim()
+        source_text.trim(),
+        skill_preset.name,
+        skills,
+        skill_preset.guidance
     )
 }
 

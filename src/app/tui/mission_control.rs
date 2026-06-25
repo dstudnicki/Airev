@@ -129,14 +129,25 @@ pub(crate) async fn run_mission_control_loop(
                     }
                     KeyCode::Char('f') if app.compose_input.is_empty() => {
                         app.fast_profile = !app.fast_profile;
-                        app.message = format!("fast profile: {}", if app.fast_profile { "on" } else { "off" });
+                        app.message = format!(
+                            "fast profile: {}",
+                            if app.fast_profile { "on" } else { "off" }
+                        );
                     }
                     KeyCode::Enter => {
                         let input = app.compose_input.trim().to_string();
                         if input.is_empty() {
                             app.message = "Compose text is empty.".to_string();
                         } else {
-                            match compose_mission_command(project, Some(input), None, false, app.fast_profile).await {
+                            match compose_mission_command(
+                                project,
+                                Some(input),
+                                None,
+                                false,
+                                app.fast_profile,
+                            )
+                            .await
+                            {
                                 Ok(()) => match latest_mission(project) {
                                     Ok(mission) => {
                                         app.mission_id = mission.id.clone();
@@ -148,10 +159,14 @@ pub(crate) async fn run_mission_control_loop(
                                         app.focus = MissionControlPanel::Agents;
                                         start_visible_agent_terminals_from_ui(project, app);
                                         if app.terminals.is_empty() {
-                                            app.message = "Mission composed, but no GSD terminals started.".to_string();
+                                            app.message =
+                                                "Mission composed, but no GSD terminals started."
+                                                    .to_string();
                                         }
                                     }
-                                    Err(error) => app.message = format!("compose created no mission: {error}"),
+                                    Err(error) => {
+                                        app.message = format!("compose created no mission: {error}")
+                                    }
                                 },
                                 Err(error) => app.message = format!("compose failed: {error}"),
                             }
@@ -175,7 +190,10 @@ pub(crate) async fn run_mission_control_loop(
                     KeyCode::Char('c') => app.focus = MissionControlPanel::Composer,
                     KeyCode::Char('f') => {
                         app.fast_profile = !app.fast_profile;
-                        app.message = format!("fast profile: {}", if app.fast_profile { "on" } else { "off" });
+                        app.message = format!(
+                            "fast profile: {}",
+                            if app.fast_profile { "on" } else { "off" }
+                        );
                     }
                     KeyCode::Char('d') => app.focus = MissionControlPanel::Projects,
                     KeyCode::Left | KeyCode::Up => move_mission_control_selection(app, -1),
@@ -264,7 +282,11 @@ pub(crate) fn render_agent_tiles(
     if agents.is_empty() {
         frame.render_widget(
             Paragraph::new("No agents in this workspace. Press c to compose a mission.")
-                .block(mission_control_block(app, MissionControlPanel::Agents, "AGENT TILES"))
+                .block(mission_control_block(
+                    app,
+                    MissionControlPanel::Agents,
+                    "AGENT TILES",
+                ))
                 .style(
                     Style::default()
                         .fg(app.settings.theme.muted)
@@ -300,18 +322,41 @@ pub(crate) fn render_agent_tiles(
             block = block.border_style(Style::default().fg(app.settings.theme.accent));
         }
         let mut lines = vec![
-            Line::from(Span::styled(&agent.task, Style::default().fg(app.settings.theme.foreground).add_modifier(Modifier::BOLD))),
-            Line::from(format!("status: {}", format_mission_agent_status(&agent.status))),
+            Line::from(Span::styled(
+                &agent.task,
+                Style::default()
+                    .fg(app.settings.theme.foreground)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(format!(
+                "status: {}",
+                format_mission_agent_status(&agent.status)
+            )),
             Line::from(format!("project: {}", agent.project)),
             Line::from(format!("children: {child_count}")),
-            Line::from(format!("profile: {}", agent.runner_profile.as_deref().unwrap_or("default"))),
+            Line::from(format!(
+                "profile: {}",
+                agent.runner_profile.as_deref().unwrap_or("default")
+            )),
+            Line::from(format!(
+                "preset: {}",
+                agent.prompt_preset.as_deref().unwrap_or("implementation")
+            )),
         ];
         if let Some(session) = app.terminals.get(&agent.id) {
             lines.push(Line::from(Span::styled(
                 format!("─ tmux {} {} ─", session.tmux_session, session.tmux_pane),
                 Style::default().fg(app.settings.theme.accent),
             )));
-            for line in session.output.lines().rev().take(18).collect::<Vec<_>>().into_iter().rev() {
+            for line in session
+                .output
+                .lines()
+                .rev()
+                .take(18)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
                 lines.push(Line::from(line.to_string()));
             }
         } else if let Some(last_log) = agent.last_log.as_deref() {
@@ -340,7 +385,10 @@ pub(crate) fn render_mission_composer_panel(
         Line::from("Describe the app and features. Example:"),
         Line::from("cashpilot: onboarding, billing fixes, CSV export"),
         Line::from(""),
-        Line::from(vec![Span::styled("fast profile: ", label_style(&app.settings.theme)), Span::raw(if app.fast_profile { "on" } else { "off" })]),
+        Line::from(vec![
+            Span::styled("fast profile: ", label_style(&app.settings.theme)),
+            Span::raw(if app.fast_profile { "on" } else { "off" }),
+        ]),
         Line::from(""),
         Line::from(app.compose_input.as_str()),
     ];
@@ -352,7 +400,11 @@ pub(crate) fn render_mission_composer_panel(
                     .fg(app.settings.theme.foreground)
                     .bg(app.settings.theme.background),
             )
-            .block(mission_control_block(app, MissionControlPanel::Composer, "C COMPOSE MISSION")),
+            .block(mission_control_block(
+                app,
+                MissionControlPanel::Composer,
+                "C COMPOSE MISSION",
+            )),
         area,
     );
 }
@@ -364,7 +416,10 @@ pub(crate) fn render_mission_projects_panel(
 ) {
     let items = if app.projects.is_empty() {
         vec![ListItem::new(Line::from(vec![
-            Span::styled("No initialized revision projects found", Style::default().fg(app.settings.theme.muted)),
+            Span::styled(
+                "No initialized revision projects found",
+                Style::default().fg(app.settings.theme.muted),
+            ),
             Span::raw(" — run `pb init` in a project or add it to config."),
         ]))]
     } else {
@@ -372,7 +427,11 @@ pub(crate) fn render_mission_projects_panel(
             .iter()
             .enumerate()
             .map(|(index, project)| {
-                let marker = if index == app.selected_project { "› " } else { "  " };
+                let marker = if index == app.selected_project {
+                    "› "
+                } else {
+                    "  "
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled(marker, Style::default().fg(app.settings.theme.accent)),
                     Span::raw(project.display().to_string()),
@@ -387,7 +446,11 @@ pub(crate) fn render_mission_projects_panel(
                     .fg(app.settings.theme.foreground)
                     .bg(app.settings.theme.background),
             )
-            .block(mission_control_block(app, MissionControlPanel::Projects, "D PROJECT DIFFS")),
+            .block(mission_control_block(
+                app,
+                MissionControlPanel::Projects,
+                "D PROJECT DIFFS",
+            )),
         area,
     );
 }
@@ -513,7 +576,9 @@ pub(crate) fn clamp_mission_control_selection(app: &mut MissionControlApp) {
         return;
     }
     app.selected_agent = app.selected_agent.min(visible.len() - 1);
-    let diff_len = app.mission.agents[visible[app.selected_agent]].diff_refs.len();
+    let diff_len = app.mission.agents[visible[app.selected_agent]]
+        .diff_refs
+        .len();
     if diff_len == 0 {
         app.selected_diff = 0;
     } else {
@@ -524,7 +589,8 @@ pub(crate) fn clamp_mission_control_selection(app: &mut MissionControlApp) {
 pub(crate) fn move_mission_control_selection(app: &mut MissionControlApp, delta: isize) {
     match app.focus {
         MissionControlPanel::Agents | MissionControlPanel::Main | MissionControlPanel::Detail => {
-            app.selected_agent = move_index(app.selected_agent, visible_agent_indexes(app).len(), delta);
+            app.selected_agent =
+                move_index(app.selected_agent, visible_agent_indexes(app).len(), delta);
             app.selected_diff = 0;
         }
         MissionControlPanel::Diffs => {
@@ -602,7 +668,8 @@ pub(crate) fn start_focused_agent_terminal_from_ui(project: &Path, app: &mut Mis
     match start_agent_terminal(project, app, &agent_id) {
         Ok(()) => {
             app.terminal_input = true;
-            app.message = format!("agent {agent_id} terminal started; typing goes to GSD, Esc returns to WM");
+            app.message =
+                format!("agent {agent_id} terminal started; typing goes to GSD, Esc returns to WM");
         }
         Err(error) => app.message = format!("agent {agent_id} terminal failed: {error}"),
     }
@@ -691,7 +758,10 @@ pub(crate) fn enter_terminal_input_mode(app: &mut MissionControlApp) {
     }
 }
 
-pub(crate) fn send_key_to_focused_terminal(app: &mut MissionControlApp, key: KeyCode) -> Result<()> {
+pub(crate) fn send_key_to_focused_terminal(
+    app: &mut MissionControlApp,
+    key: KeyCode,
+) -> Result<()> {
     let agent_id = selected_mission_agent(app)
         .map(|agent| agent.id.clone())
         .ok_or_else(|| anyhow!("No agent selected."))?;
@@ -766,7 +836,13 @@ pub(crate) fn run_visible_agents_from_ui(project: &Path, app: &mut MissionContro
         if app.mission.agents[index].status != MissionAgentStatus::Pending {
             continue;
         }
-        if let Err(error) = run_agent_loop(project, &mut app.mission, &agent_id, profile.clone(), app.fast_profile) {
+        if let Err(error) = run_agent_loop(
+            project,
+            &mut app.mission,
+            &agent_id,
+            profile.clone(),
+            app.fast_profile,
+        ) {
             app.message = format!("agent {agent_id} run failed: {error}");
             let _ = write_mission(project, &app.mission);
             return;
@@ -862,7 +938,12 @@ pub(crate) fn monitor_tmux_lifecycle(project: &Path, app: &mut MissionControlApp
         let Ok(Some(status)) = tmux_pane_dead_status(&session.tmux_pane) else {
             continue;
         };
-        let Some(agent) = app.mission.agents.iter_mut().find(|agent| agent.id == agent_id) else {
+        let Some(agent) = app
+            .mission
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == agent_id)
+        else {
             continue;
         };
         if matches!(
@@ -929,10 +1010,9 @@ pub(crate) fn refresh_tmux_terminal_outputs(app: &mut MissionControlApp) {
 }
 
 pub(crate) fn ensure_tmux_available() -> Result<()> {
-    let output = Command::new("tmux")
-        .arg("-V")
-        .output()
-        .context("tmux is required for Patchbay live agent terminals, but `tmux -V` could not run")?;
+    let output = Command::new("tmux").arg("-V").output().context(
+        "tmux is required for Patchbay live agent terminals, but `tmux -V` could not run",
+    )?;
     if output.status.success() {
         Ok(())
     } else {
@@ -1048,6 +1128,9 @@ pub(crate) fn tmux_agent_shell_command(
         ("PATCHBAY_PROJECT", agent.project.clone()),
         ("PATCHBAY_PROFILE", profile.to_string()),
     ];
+    if let Ok(bin) = env::current_exe() {
+        env_parts.push(("PATCHBAY_BIN", bin.display().to_string()));
+    }
     if let Some(parent_id) = &agent.parent_id {
         env_parts.push(("PATCHBAY_PARENT_AGENT_ID", parent_id.clone()));
     }
@@ -1061,6 +1144,9 @@ pub(crate) fn tmux_agent_shell_command(
         format!("exec sh -lc {}", shell_quote(&runner_cmd))
     } else {
         let mut parts = vec!["exec".to_string(), "gsd".to_string()];
+        if env::var("PATCHBAY_GSD_INTERACTIVE").ok().as_deref() != Some("1") {
+            parts.push("--print".to_string());
+        }
         if let Some(model) = runner_model_for_profile(profile) {
             parts.push("--model".to_string());
             parts.push(shell_quote(&model));

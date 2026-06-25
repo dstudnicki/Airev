@@ -227,6 +227,10 @@ pub(crate) struct MissionAgent {
     pub(crate) revision_ids: Vec<i64>,
     pub(crate) diff_refs: Vec<MissionDiffRef>,
     #[serde(default)]
+    pub(crate) prompt_preset: Option<String>,
+    #[serde(default)]
+    pub(crate) recommended_skills: Vec<String>,
+    #[serde(default)]
     pub(crate) runner_profile: Option<String>,
     #[serde(default)]
     pub(crate) session_id: Option<String>,
