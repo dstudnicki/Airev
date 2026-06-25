@@ -308,19 +308,21 @@ pub(crate) fn orchestrator_project_name(
     registry: &ProjectRegistry,
     mentioned: &[String],
 ) -> Result<String> {
-    for candidate in [".patchbay", "patchbay", "Patchbay", "Airev", "airev"] {
+    for candidate in ["Patchbay", "patchbay", "Airev", "airev"] {
         if let Ok(project) = registry.resolve(candidate) {
-            return Ok(project.name.clone());
+            if !project.name.starts_with('.') {
+                return Ok(project.name.clone());
+            }
         }
     }
-    if let [only] = mentioned {
-        return Ok(only.clone());
+    if let Some(first) = mentioned.first() {
+        return Ok(first.clone());
     }
     registry
         .names()
         .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("No Patchbay projects are configured."))
+        .find(|name| !name.starts_with('.'))
+        .ok_or_else(|| anyhow!("No non-hidden Patchbay projects are configured."))
 }
 
 pub(crate) async fn add_mission_agent_command(

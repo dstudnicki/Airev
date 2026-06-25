@@ -109,6 +109,8 @@ pub(crate) struct AgentTerminalSession {
 pub(crate) struct MissionControlApp {
     pub(crate) mission_id: String,
     pub(crate) mission: Mission,
+    pub(crate) missions: Vec<Mission>,
+    pub(crate) selected_mission: usize,
     pub(crate) focus: MissionControlPanel,
     pub(crate) selected_agent: usize,
     pub(crate) selected_diff: usize,

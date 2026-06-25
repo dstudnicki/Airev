@@ -18,15 +18,26 @@ pub(crate) async fn launch_mission_control_ui(
     mission_id: Option<&str>,
     local_project: Option<&Path>,
 ) -> Result<()> {
+    let missions = list_missions(project).unwrap_or_default();
+    let selected_mission = missions.len().saturating_sub(1);
     let mission = match mission_id {
         Some(id) => read_mission(project, id)?,
-        None => latest_mission(project).unwrap_or_else(|_| empty_mission()),
+        None => missions
+            .get(selected_mission)
+            .cloned()
+            .unwrap_or_else(empty_mission),
     };
     let settings = load_tui_settings(project);
     let mut app = MissionControlApp {
         mission_id: mission.id.clone(),
         mission,
-        focus: MissionControlPanel::Agents,
+        missions,
+        selected_mission,
+        focus: if mission_id.is_some() {
+            MissionControlPanel::Agents
+        } else {
+            MissionControlPanel::Main
+        },
         selected_agent: 0,
         selected_diff: 0,
         workspace_parent: None,
@@ -104,7 +115,9 @@ pub(crate) async fn run_mission_control_loop(
 ) -> Result<()> {
     loop {
         clamp_mission_control_selection(app);
-        reconcile_agent_terminals(project, app);
+        if mission_agent_runtime_active(app) {
+            reconcile_agent_terminals(project, app);
+        }
         terminal.draw(|frame| render_mission_control(frame, app))?;
 
         if event::poll(Duration::from_millis(250))? {
@@ -150,6 +163,8 @@ pub(crate) async fn run_mission_control_loop(
                             {
                                 Ok(()) => match latest_mission(project) {
                                     Ok(mission) => {
+                                        app.missions = list_missions(project).unwrap_or_default();
+                                        app.selected_mission = app.missions.len().saturating_sub(1);
                                         app.mission_id = mission.id.clone();
                                         app.mission = mission;
                                         app.workspace_parent = None;
@@ -181,8 +196,15 @@ pub(crate) async fn run_mission_control_loop(
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Esc => {
-                        if !leave_agent_workspace(app) {
+                        if app.focus == MissionControlPanel::Main {
+                            app.message = mission_control_help();
+                        } else if !leave_agent_workspace(app) {
                             app.focus = MissionControlPanel::Main;
+                            app.workspace_parent = None;
+                            app.selected_agent = 0;
+                            app.selected_diff = 0;
+                            app.terminals.clear();
+                            app.message = mission_control_help();
                         }
                     }
                     KeyCode::Tab => focus_next_mission_panel(app),
@@ -204,7 +226,9 @@ pub(crate) async fn run_mission_control_loop(
                     KeyCode::Char('S') => start_visible_agent_terminals_from_ui(project, app),
                     KeyCode::Char('R') => run_visible_agents_from_ui(project, app),
                     KeyCode::Enter => {
-                        if app.focus == MissionControlPanel::Projects {
+                        if app.focus == MissionControlPanel::Main {
+                            open_selected_mission_from_list(app);
+                        } else if app.focus == MissionControlPanel::Projects {
                             if let Some(project) = app.projects.get(app.selected_project).cloned() {
                                 app.launch_revision_project = Some(project);
                                 break;
@@ -223,7 +247,9 @@ pub(crate) async fn run_mission_control_loop(
 
         if app.last_refresh.elapsed() > Duration::from_secs(3) {
             refresh_mission_control(project, app);
-            reconcile_agent_terminals(project, app);
+            if mission_agent_runtime_active(app) {
+                reconcile_agent_terminals(project, app);
+            }
         }
     }
     Ok(())
@@ -251,6 +277,7 @@ pub(crate) fn render_mission_control(frame: &mut ratatui::Frame<'_>, app: &Missi
 
     render_mission_control_header(frame, app, vertical[0]);
     match app.focus {
+        MissionControlPanel::Main => render_mission_list_panel(frame, app, vertical[1]),
         MissionControlPanel::Projects => render_mission_projects_panel(frame, app, vertical[1]),
         MissionControlPanel::Composer => render_mission_composer_panel(frame, app, vertical[1]),
         _ => render_agent_workspace(frame, app, vertical[1]),
@@ -262,6 +289,61 @@ pub(crate) fn render_mission_control(frame: &mut ratatui::Frame<'_>, app: &Missi
                 .bg(app.settings.theme.background),
         ),
         vertical[2],
+    );
+}
+
+pub(crate) fn render_mission_list_panel(
+    frame: &mut ratatui::Frame<'_>,
+    app: &MissionControlApp,
+    area: Rect,
+) {
+    if app.missions.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No missions yet. Press c to compose a new prompt.")
+                .style(
+                    Style::default()
+                        .fg(app.settings.theme.muted)
+                        .bg(app.settings.theme.background),
+                )
+                .block(mission_control_block(app, MissionControlPanel::Main, "MISSIONS")),
+            area,
+        );
+        return;
+    }
+
+    let items = app
+        .missions
+        .iter()
+        .enumerate()
+        .map(|(index, mission)| {
+            let marker = if index == app.selected_mission { "▶" } else { " " };
+            ListItem::new(Line::from(vec![
+                Span::styled(marker, Style::default().fg(app.settings.theme.accent)),
+                Span::raw(" "),
+                Span::styled(&mission.id, Style::default().fg(app.settings.theme.foreground)),
+                Span::raw("  "),
+                Span::styled(
+                    format_mission_status(&mission.status),
+                    status_style(format_mission_status(&mission.status)),
+                ),
+                Span::raw(format!("  {:>2} agent(s)  ", mission.agents.len())),
+                Span::styled(&mission.updated_at, Style::default().fg(app.settings.theme.muted)),
+                Span::raw("  "),
+                Span::raw(&mission.title),
+            ]))
+            .style(
+                Style::default()
+                    .fg(app.settings.theme.foreground)
+                    .bg(app.settings.theme.background),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    frame.render_widget(
+        List::new(items)
+            .block(mission_control_block(app, MissionControlPanel::Main, "MISSIONS"))
+            .style(Style::default().bg(app.settings.theme.background)),
+        area,
     );
 }
 
@@ -460,26 +542,42 @@ pub(crate) fn render_mission_control_header(
     app: &MissionControlApp,
     area: Rect,
 ) {
-    let title = Line::from(vec![
-        Span::styled(
-            "Patchbay Mission Control",
-            Style::default()
-                .fg(app.settings.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            &app.mission.id,
-            Style::default().fg(app.settings.theme.foreground),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format_mission_status(&app.mission.status),
-            status_style(format_mission_status(&app.mission.status)),
-        ),
-        Span::raw("  "),
-        Span::raw(&app.mission.title),
-    ]);
+    let title = if app.focus == MissionControlPanel::Main {
+        Line::from(vec![
+            Span::styled(
+                "Patchbay Mission Control",
+                Style::default()
+                    .fg(app.settings.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  Mission List  "),
+            Span::styled(
+                format!("{} mission(s)", app.missions.len()),
+                Style::default().fg(app.settings.theme.foreground),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                "Patchbay Mission Control",
+                Style::default()
+                    .fg(app.settings.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                &app.mission.id,
+                Style::default().fg(app.settings.theme.foreground),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format_mission_status(&app.mission.status),
+                status_style(format_mission_status(&app.mission.status)),
+            ),
+            Span::raw("  "),
+            Span::raw(&app.mission.title),
+        ])
+    };
     frame.render_widget(
         Paragraph::new(title)
             .alignment(Alignment::Center)
@@ -533,6 +631,25 @@ pub(crate) fn child_agent_indexes(app: &MissionControlApp, parent_id: &str) -> V
         .collect()
 }
 
+pub(crate) fn mission_agent_runtime_active(app: &MissionControlApp) -> bool {
+    !matches!(app.focus, MissionControlPanel::Main | MissionControlPanel::Composer)
+}
+
+pub(crate) fn open_selected_mission_from_list(app: &mut MissionControlApp) {
+    let Some(mission) = app.missions.get(app.selected_mission).cloned() else {
+        app.message = "No mission selected. Press c to compose one.".to_string();
+        return;
+    };
+    app.mission_id = mission.id.clone();
+    app.mission = mission;
+    app.focus = MissionControlPanel::Agents;
+    app.workspace_parent = None;
+    app.selected_agent = 0;
+    app.selected_diff = 0;
+    app.terminals.clear();
+    app.message = mission_control_help();
+}
+
 pub(crate) fn enter_selected_agent_workspace(app: &mut MissionControlApp) -> bool {
     let Some(agent) = selected_mission_agent(app) else {
         return false;
@@ -568,6 +685,11 @@ pub(crate) fn clamp_mission_control_selection(app: &mut MissionControlApp) {
     } else {
         app.selected_project = app.selected_project.min(app.projects.len() - 1);
     }
+    if app.missions.is_empty() {
+        app.selected_mission = 0;
+    } else {
+        app.selected_mission = app.selected_mission.min(app.missions.len() - 1);
+    }
 
     let visible = visible_agent_indexes(app);
     if visible.is_empty() {
@@ -588,7 +710,10 @@ pub(crate) fn clamp_mission_control_selection(app: &mut MissionControlApp) {
 
 pub(crate) fn move_mission_control_selection(app: &mut MissionControlApp, delta: isize) {
     match app.focus {
-        MissionControlPanel::Agents | MissionControlPanel::Main | MissionControlPanel::Detail => {
+        MissionControlPanel::Main => {
+            app.selected_mission = move_index(app.selected_mission, app.missions.len(), delta);
+        }
+        MissionControlPanel::Agents | MissionControlPanel::Detail => {
             app.selected_agent =
                 move_index(app.selected_agent, visible_agent_indexes(app).len(), delta);
             app.selected_diff = 0;
@@ -636,6 +761,21 @@ pub(crate) fn focus_previous_mission_panel(app: &mut MissionControlApp) {
 }
 
 pub(crate) fn refresh_mission_control(project: &Path, app: &mut MissionControlApp) {
+    match list_missions(project) {
+        Ok(missions) => {
+            app.missions = missions;
+            clamp_mission_control_selection(app);
+        }
+        Err(error) => {
+            app.message = format!("mission list refresh failed: {error}");
+        }
+    }
+
+    if app.focus == MissionControlPanel::Main {
+        app.last_refresh = Instant::now();
+        return;
+    }
+
     let mission_result = if app.mission_id == "no-mission" {
         latest_mission(project)
     } else {
@@ -1168,7 +1308,7 @@ pub(crate) fn shell_quote(value: &str) -> String {
 }
 
 pub(crate) fn mission_control_help() -> String {
-    "keys: q quit · arrows focus tiles · c compose+launch GSD · i type into focused GSD · esc WM mode · r refresh · s start focused · enter child workspace".to_string()
+    "keys: q quit · arrows select · enter open mission/child workspace · esc mission list · c compose+launch GSD · r refresh · s start focused · i tmux input".to_string()
 }
 
 pub(crate) fn status_style(status: &str) -> Style {

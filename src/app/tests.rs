@@ -439,6 +439,23 @@ fn global_registry_discovers_project_directories_from_home_dev() {
 }
 
 #[test]
+fn compose_ignores_hidden_patchbay_as_root_orchestrator() {
+    let project = temp_project("compose-hidden-root");
+    write_project_registry_config(
+        &project,
+        "[projects.\".patchbay\"]\npath = \".\"\n[projects.Airev]\npath = \".\"\n[projects.CashPilot]\npath = \".\"\n",
+    );
+    let registry = load_project_registry(&project).expect("registry loads");
+
+    let tasks = compose_mission_tasks(&registry, "Odpal Airev i CashPilot").expect("compose parses");
+
+    assert_eq!(tasks.len(), 1);
+    assert_ne!(tasks[0].project, ".patchbay");
+    assert_eq!(tasks[0].project, "Airev");
+    fs::remove_dir_all(project).ok();
+}
+
+#[test]
 fn compose_natural_multi_project_prompt_creates_only_root_orchestrator() {
     let project = temp_project("compose-orchestrator");
     write_project_registry_config(
