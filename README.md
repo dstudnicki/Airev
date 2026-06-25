@@ -4,10 +4,10 @@ Patchbay is a local tiling control surface for coding-agent work. The short glob
 
 Patchbay now has four connected pieces:
 
-- **Chat composer**: describe an app and desired features; Patchbay turns that into mission agents.
-- **Hierarchical agent tree**: root agents can create child agents, so the main workspace stays readable.
-- **Tiled WM shell**: agents are shown as tiles with status, profile, child count, and live terminal output.
-- **Loop runner**: live agents run in tmux windows controlled by Patchbay; batch mode still exists for non-interactive runs.
+- **Chat composer**: describe an app and desired outcome; Patchbay creates one root orchestrator agent.
+- **Hierarchical agent tree**: root agents create child agents, and child agents can create their own children.
+- **Tiled WM shell**: agents are shown as tmux-backed tiles with status, profile, child count, and live terminal output.
+- **Loop runner**: live agents run in tmux windows controlled by Patchbay; pending child agents are auto-started.
 
 ## Install
 
@@ -65,9 +65,7 @@ Run immediately with the fast profile:
 pb compose --text "cashpilot: onboarding, billing fixes, CSV export" --run --fast
 ```
 
-With explicit `project: feature one, feature two` syntax, this creates one root agent per listed feature and initializes `.ai-revisions/` in the target project when needed.
-
-With natural multi-project text, Patchbay creates one root orchestrator agent and nests mentioned projects as child agents under it. Example: `Odpal projekt Airev i CashPilot...` becomes one Patchbay root tile with Airev and CashPilot child tiles inside that workspace.
+`pb compose` creates one root orchestrator agent and initializes `.ai-revisions/` in the target project when needed. The root agent decides how to split the work and can create child agents with `pb mission add-agent`. Patchbay watches mission state and automatically starts pending child agents in tmux windows.
 
 ## Mission commands
 
@@ -81,7 +79,7 @@ pb mission add-agent <mission-id> --parent <agent-id> --project cashpilot --task
 pb mission update-agent <mission-id> <agent-id> --status complete --summary "done"
 ```
 
-Child agents are attached under their parent and appear inside that parent workspace, not as noisy root tiles.
+Child agents are attached under their parent and appear inside that parent workspace, not as noisy root tiles. Any pending child agent added by a running GSD session is auto-started by Mission Control.
 
 ## Runner profiles
 

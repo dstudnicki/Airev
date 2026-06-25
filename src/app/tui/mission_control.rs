@@ -104,7 +104,7 @@ pub(crate) async fn run_mission_control_loop(
 ) -> Result<()> {
     loop {
         clamp_mission_control_selection(app);
-        refresh_tmux_terminal_outputs(app);
+        reconcile_agent_terminals(project, app);
         terminal.draw(|frame| render_mission_control(frame, app))?;
 
         if event::poll(Duration::from_millis(250))? {
@@ -205,6 +205,7 @@ pub(crate) async fn run_mission_control_loop(
 
         if app.last_refresh.elapsed() > Duration::from_secs(3) {
             refresh_mission_control(project, app);
+            reconcile_agent_terminals(project, app);
         }
     }
     Ok(())
@@ -635,16 +636,11 @@ pub(crate) fn start_agent_terminal(
             window_name.as_str(),
             "-c",
             agent.project_path.as_str(),
-            shell_command.as_str(),
+            "sleep 86400",
         ])?;
-        tmux_command([
-            "set-option",
-            "-t",
-            session_name.as_str(),
-            "remain-on-exit",
-            "on",
-        ])?;
-        tmux_pane_id(&format!("{}:{}", session_name, window_name))?
+        let pane_id = tmux_pane_id(&format!("{}:{}", session_name, window_name))?;
+        tmux_prepare_agent_pane(&pane_id, &agent.project_path, &shell_command)?;
+        pane_id
     } else {
         tmux_command([
             "new-window",
@@ -655,9 +651,11 @@ pub(crate) fn start_agent_terminal(
             window_name.as_str(),
             "-c",
             agent.project_path.as_str(),
-            shell_command.as_str(),
+            "sleep 86400",
         ])?;
-        tmux_pane_id(&format!("{}:{}", session_name, window_name))?
+        let pane_id = tmux_pane_id(&format!("{}:{}", session_name, window_name))?;
+        tmux_prepare_agent_pane(&pane_id, &agent.project_path, &shell_command)?;
+        pane_id
     };
 
     agent.status = MissionAgentStatus::Running;
@@ -689,7 +687,7 @@ pub(crate) fn enter_terminal_input_mode(app: &mut MissionControlApp) {
         app.terminal_input = true;
         app.message = format!("typing into {agent_id}; Esc returns to WM");
     } else {
-        app.message = format!("{agent_id} has no terminal yet; press r first");
+        app.message = format!("{agent_id} has no terminal yet; press s first");
     }
 }
 
@@ -820,6 +818,105 @@ pub(crate) async fn open_selected_mission_diff(
     Ok(())
 }
 
+pub(crate) fn reconcile_agent_terminals(project: &Path, app: &mut MissionControlApp) {
+    reconnect_tmux_terminal_sessions(app);
+    refresh_tmux_terminal_outputs(app);
+    monitor_tmux_lifecycle(project, app);
+    auto_start_pending_agent_terminals(project, app);
+}
+
+pub(crate) fn reconnect_tmux_terminal_sessions(app: &mut MissionControlApp) {
+    let sessions = app
+        .mission
+        .agents
+        .iter()
+        .filter_map(|agent| {
+            if app.terminals.contains_key(&agent.id) {
+                return None;
+            }
+            let session_id = agent.session_id.as_deref()?;
+            let (session_name, pane_id) = parse_tmux_session_id(session_id)?;
+            let output = tmux_capture_pane(&pane_id).ok()?;
+            Some((
+                agent.id.clone(),
+                AgentTerminalSession {
+                    tmux_session: session_name,
+                    tmux_pane: pane_id,
+                    output,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (agent_id, session) in sessions {
+        app.terminals.insert(agent_id, session);
+    }
+}
+
+pub(crate) fn monitor_tmux_lifecycle(project: &Path, app: &mut MissionControlApp) {
+    let mut changed = false;
+    let agent_ids = app.terminals.keys().cloned().collect::<Vec<_>>();
+    for agent_id in agent_ids {
+        let Some(session) = app.terminals.get(&agent_id) else {
+            continue;
+        };
+        let Ok(Some(status)) = tmux_pane_dead_status(&session.tmux_pane) else {
+            continue;
+        };
+        let Some(agent) = app.mission.agents.iter_mut().find(|agent| agent.id == agent_id) else {
+            continue;
+        };
+        if matches!(
+            agent.status,
+            MissionAgentStatus::Complete | MissionAgentStatus::Failed | MissionAgentStatus::Blocked
+        ) {
+            continue;
+        }
+        agent.status = if status == 0 {
+            MissionAgentStatus::Complete
+        } else {
+            MissionAgentStatus::Failed
+        };
+        agent.finished_at = Some(Utc::now().to_rfc3339());
+        agent.updated_at = Utc::now().to_rfc3339();
+        if status != 0 {
+            agent.last_error = Some(format!("tmux pane exited with status {status}"));
+        }
+        changed = true;
+    }
+    if changed {
+        refresh_mission_status(&mut app.mission);
+        let _ = write_mission(project, &app.mission);
+    }
+}
+
+pub(crate) fn auto_start_pending_agent_terminals(project: &Path, app: &mut MissionControlApp) {
+    let pending = app
+        .mission
+        .agents
+        .iter()
+        .filter(|agent| agent.status == MissionAgentStatus::Pending)
+        .filter(|agent| !app.terminals.contains_key(&agent.id))
+        .map(|agent| agent.id.clone())
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut started = 0usize;
+    for agent_id in pending {
+        match start_agent_terminal(project, app, &agent_id) {
+            Ok(()) => started += 1,
+            Err(error) => {
+                app.message = format!("auto-start failed for {agent_id}: {error}");
+                break;
+            }
+        }
+    }
+    if started > 0 {
+        app.message = format!("auto-started {started} pending GSD terminal(s)");
+    }
+}
+
 pub(crate) fn refresh_tmux_terminal_outputs(app: &mut MissionControlApp) {
     for session in app.terminals.values_mut() {
         match tmux_capture_pane(&session.tmux_pane) {
@@ -872,8 +969,49 @@ pub(crate) fn tmux_pane_id(target: &str) -> Result<String> {
     tmux_command(["display-message", "-p", "-t", target, "#{pane_id}"])
 }
 
+pub(crate) fn tmux_prepare_agent_pane(
+    pane_id: &str,
+    project_path: &str,
+    shell_command: &str,
+) -> Result<()> {
+    tmux_command(["set-window-option", "-t", pane_id, "remain-on-exit", "on"])?;
+    tmux_command([
+        "respawn-pane",
+        "-k",
+        "-t",
+        pane_id,
+        "-c",
+        project_path,
+        shell_command,
+    ])?;
+    Ok(())
+}
+
+pub(crate) fn tmux_pane_dead_status(pane_id: &str) -> Result<Option<i32>> {
+    let output = tmux_command([
+        "display-message",
+        "-p",
+        "-t",
+        pane_id,
+        "#{pane_dead}:#{pane_dead_status}",
+    ])?;
+    let Some((dead, status)) = output.split_once(':') else {
+        return Ok(None);
+    };
+    if dead != "1" {
+        return Ok(None);
+    }
+    Ok(Some(status.parse::<i32>().unwrap_or(1)))
+}
+
 pub(crate) fn tmux_capture_pane(pane_id: &str) -> Result<String> {
     tmux_command(["capture-pane", "-t", pane_id, "-p", "-S", "-200"])
+}
+
+pub(crate) fn parse_tmux_session_id(session_id: &str) -> Option<(String, String)> {
+    let rest = session_id.strip_prefix("tmux:")?;
+    let (session, pane) = rest.split_once(':')?;
+    Some((session.to_string(), pane.to_string()))
 }
 
 pub(crate) fn tmux_session_name(mission_id: &str) -> String {

@@ -290,22 +290,18 @@ async fn mission_open_diff_rejects_unbound_diff_refs() {
 }
 
 #[test]
-fn compose_mission_tasks_splits_features_for_detected_project() {
-    let project = temp_project("compose-split");
+fn compose_mission_tasks_creates_single_root_orchestrator() {
+    let project = temp_project("compose-root");
     write_project_registry_config(&project, "[projects.CashPilot]\npath = \".\"\n");
     let registry = load_project_registry(&project).expect("registry loads");
 
-    let tasks = compose_mission_tasks(
-        &registry,
-        "CashPilot: onboarding, billing fixes, CSV export",
-    )
-    .expect("compose parses");
+    let prompt = "CashPilot: onboarding, billing fixes, CSV export";
+    let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
 
-    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].project, "CashPilot");
-    assert_eq!(tasks[0].task, "onboarding");
-    assert_eq!(tasks[1].task, "billing fixes");
-    assert_eq!(tasks[2].task, "CSV export");
+    assert_eq!(tasks[0].task, prompt);
+    assert_eq!(tasks[0].parent_id, None);
     fs::remove_dir_all(project).ok();
 }
 
@@ -347,6 +343,15 @@ fn tmux_names_are_sanitized() {
 }
 
 #[test]
+fn tmux_session_ids_parse_for_reconnect() {
+    assert_eq!(
+        parse_tmux_session_id("tmux:patchbay-mission-1:%3"),
+        Some(("patchbay-mission-1".to_string(), "%3".to_string()))
+    );
+    assert_eq!(parse_tmux_session_id("pty-123"), None);
+}
+
+#[test]
 fn global_registry_discovers_project_directories_from_home_dev() {
     let home = temp_project("discover-home");
     let dev = home.join("Dev");
@@ -385,7 +390,7 @@ fn global_registry_discovers_project_directories_from_home_dev() {
 }
 
 #[test]
-fn compose_natural_multi_project_prompt_creates_orchestrator_with_children() {
+fn compose_natural_multi_project_prompt_creates_only_root_orchestrator() {
     let project = temp_project("compose-orchestrator");
     write_project_registry_config(
         &project,
@@ -396,13 +401,10 @@ fn compose_natural_multi_project_prompt_creates_orchestrator_with_children() {
     let prompt = "Odpal projekt Airev i CashPilot, dowiedz sie o co chodzi w kazdym z projektów i do cashpilot zaplanuj przepisanie webowego projektu na mobilke iOS w jezyku swift";
     let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
 
-    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].project, "Patchbay");
     assert_eq!(tasks[0].task, prompt);
-    assert_eq!(tasks[1].parent_id.as_deref(), Some("agent-01-patchbay"));
-    assert_eq!(tasks[1].project, "Airev");
-    assert_eq!(tasks[2].parent_id.as_deref(), Some("agent-01-patchbay"));
-    assert_eq!(tasks[2].project, "CashPilot");
+    assert_eq!(tasks[0].parent_id, None);
     fs::remove_dir_all(project).ok();
 }
 

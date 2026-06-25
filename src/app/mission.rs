@@ -256,55 +256,13 @@ pub(crate) fn compose_mission_tasks(
     registry: &ProjectRegistry,
     source_text: &str,
 ) -> Result<Vec<MissionTaskSpec>> {
-    if let Some((project_name, body)) = detect_explicit_compose_project(registry, source_text)? {
-        let features = split_compose_features(&body);
-        if features.is_empty() {
-            bail!("Could not find any feature/task descriptions in compose text.");
-        }
-        return Ok(features
-            .into_iter()
-            .map(|task| MissionTaskSpec {
-                project: project_name.clone(),
-                task,
-                parent_id: None,
-            })
-            .collect());
-    }
-
     let mentioned = mentioned_compose_projects(registry, source_text);
     let root_project = orchestrator_project_name(registry, &mentioned)?;
-    let root_agent_id = mission_agent_id(0, &root_project);
-    let mut specs = vec![MissionTaskSpec {
+    Ok(vec![MissionTaskSpec {
         project: root_project,
         task: source_text.trim().to_string(),
         parent_id: None,
-    }];
-
-    for project_name in mentioned {
-        specs.push(MissionTaskSpec {
-            project: project_name.clone(),
-            task: format!("{} (scope: {project_name})", source_text.trim()),
-            parent_id: Some(root_agent_id.clone()),
-        });
-    }
-
-    Ok(specs)
-}
-
-pub(crate) fn detect_explicit_compose_project(
-    registry: &ProjectRegistry,
-    source_text: &str,
-) -> Result<Option<(String, String)>> {
-    let Some((prefix, rest)) = source_text.split_once(':') else {
-        return Ok(None);
-    };
-    if prefix.split_whitespace().count() > 3 {
-        return Ok(None);
-    }
-    match registry.resolve(prefix.trim()) {
-        Ok(project) => Ok(Some((project.name.clone(), rest.trim().to_string()))),
-        Err(_) => Ok(None),
-    }
+    }])
 }
 
 pub(crate) fn mentioned_compose_projects(
@@ -338,33 +296,6 @@ pub(crate) fn orchestrator_project_name(
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("No Patchbay projects are configured."))
-}
-
-pub(crate) fn split_compose_features(source_text: &str) -> Vec<String> {
-    let normalized = source_text
-        .replace("\r\n", "\n")
-        .replace("\n- ", "\n")
-        .replace("\n* ", "\n");
-    let body = ["chcę", "chce", "chcialbym", "chciałbym", "want", "needs"]
-        .iter()
-        .find_map(|marker| {
-            normalized
-                .to_ascii_lowercase()
-                .find(marker)
-                .map(|index| normalized[index + marker.len()..].to_string())
-        })
-        .unwrap_or(normalized);
-
-    body.lines()
-        .flat_map(|line| line.split([';', ',']))
-        .map(|part| {
-            part.trim()
-                .trim_start_matches(|ch: char| ch == '-' || ch == '*' || ch.is_ascii_digit() || ch == '.' || ch == ')')
-                .trim()
-                .to_string()
-        })
-        .filter(|part| !part.is_empty())
-        .collect()
 }
 
 pub(crate) async fn add_mission_agent_command(
@@ -899,11 +830,10 @@ pub(crate) fn build_mission_agent_prompt(
     task: &str,
 ) -> String {
     format!(
-        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nWork autonomously inside this project only. Preserve context in local GSD/Patchbay artifacts and verify before completion. If you need to delegate nested work, create child agents with `pb mission add-agent $PATCHBAY_MISSION_ID --parent $PATCHBAY_AGENT_ID --project {} --task '<child task>'`. When done, report status with `pb mission update-agent $PATCHBAY_MISSION_ID $PATCHBAY_AGENT_ID --status complete --summary '<summary>'`; on failure use --status failed --error '<error>'.",
+        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nYou are a Patchbay loop agent running inside GSD. Work autonomously inside this project unless you explicitly create child agents. If the task needs parallel research, implementation, review, or project-specific work, decompose it into child agents with `pb mission add-agent $PATCHBAY_MISSION_ID --parent $PATCHBAY_AGENT_ID --project <project> --task '<child task>'`. Child agents may create their own children using the same command. Use relevant GSD skills when applicable, such as decompose-into-slices, write-milestone-brief, tdd, test, review, debug-like-expert, frontend-design, or write-docs. Coordinate child work through Patchbay, inspect their results, continue looping until the original task is complete, and verify before completion. When done, report status with `pb mission update-agent $PATCHBAY_MISSION_ID $PATCHBAY_AGENT_ID --status complete --summary '<summary>'`; on failure use --status failed --error '<error>'.",
         project.name,
         project.path.display(),
-        source_text.trim(),
-        project.name
+        source_text.trim()
     )
 }
 
