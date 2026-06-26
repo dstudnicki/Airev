@@ -31,7 +31,7 @@ pub(crate) enum Commands {
     },
     /// Compose a mission from a natural-language request.
     Compose {
-        /// User request, e.g. "CashPilot: onboarding, billing, CSV export".
+        /// User request, e.g. "Fix the login bug, review the billing flow, and add tests".
         #[arg(long)]
         text: Option<String>,
         /// Read the user request from a file.
@@ -40,9 +40,9 @@ pub(crate) enum Commands {
         /// Run pending root agents immediately after creating the mission.
         #[arg(long)]
         run: bool,
-        /// Use the fast model profile for generated agent loops.
+        /// Model/profile to use when generated agents run, e.g. gpt-5.1. Omit for GSD default.
         #[arg(long)]
-        fast: bool,
+        profile: Option<String>,
     },
     /// Create and inspect multi-project Mission Control work.
     Mission {
@@ -104,9 +104,9 @@ pub(crate) enum MissionCommand {
         task: String,
         #[arg(long)]
         title: Option<String>,
-        /// Use the fast model profile for this agent.
+        /// Model/profile to use when this agent runs. Omit for GSD default.
         #[arg(long)]
-        fast: bool,
+        profile: Option<String>,
     },
     /// Run one pending agent or all pending agents in the current workspace.
     Run {
@@ -116,8 +116,6 @@ pub(crate) enum MissionCommand {
         all: bool,
         #[arg(long)]
         profile: Option<String>,
-        #[arg(long)]
-        fast: bool,
     },
     /// List stored missions.
     List,

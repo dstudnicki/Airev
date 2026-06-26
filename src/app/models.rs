@@ -98,12 +98,34 @@ pub(crate) enum MissionControlPanel {
     Diffs,
     Projects,
     Composer,
+    Themes,
+    Resources,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MissionResourceRow {
+    pub(crate) mission_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) pane_id: String,
+    pub(crate) pane_pid: Option<u32>,
+    pub(crate) command: String,
+    pub(crate) status: String,
+    pub(crate) idle_secs: Option<u64>,
+    pub(crate) current_mission: bool,
 }
 
 pub(crate) struct AgentTerminalSession {
-    pub(crate) tmux_session: String,
     pub(crate) tmux_pane: String,
+    pub(crate) log_path: PathBuf,
     pub(crate) output: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MissionWorkspaceLayout {
+    Auto,
+    FocusLeft,
+    FocusRight,
+    FocusTop,
 }
 
 pub(crate) struct MissionControlApp {
@@ -115,12 +137,24 @@ pub(crate) struct MissionControlApp {
     pub(crate) selected_agent: usize,
     pub(crate) selected_diff: usize,
     pub(crate) workspace_parent: Option<String>,
+    pub(crate) workspace_layout: MissionWorkspaceLayout,
+    pub(crate) workspace_layout_anchor: Option<String>,
     pub(crate) projects: Vec<PathBuf>,
     pub(crate) selected_project: usize,
+    pub(crate) theme_names: Vec<String>,
+    pub(crate) selected_theme: usize,
+    pub(crate) resources: Vec<MissionResourceRow>,
+    pub(crate) selected_resource: usize,
+    pub(crate) last_resource_refresh: Instant,
+    pub(crate) last_auto_stop_check: Instant,
+    pub(crate) auto_stop_idle_secs: Option<u64>,
     pub(crate) launch_revision_project: Option<PathBuf>,
     pub(crate) compose_input: String,
+    pub(crate) compose_cursor: usize,
     pub(crate) compose_agent_target: Option<String>,
-    pub(crate) fast_profile: bool,
+    pub(crate) chat_input: String,
+    pub(crate) model_options: Vec<String>,
+    pub(crate) selected_model: usize,
     pub(crate) terminal_input: bool,
     pub(crate) terminals: BTreeMap<String, AgentTerminalSession>,
     pub(crate) last_refresh: Instant,
@@ -160,7 +194,7 @@ pub(crate) struct UiTheme {
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub(crate) struct AirevConfigFile {
+pub(crate) struct PatchbayConfigFile {
     pub(crate) theme: Option<String>,
     pub(crate) ui: Option<UiConfigFile>,
     pub(crate) themes: Option<BTreeMap<String, ThemeConfigFile>>,

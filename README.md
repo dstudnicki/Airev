@@ -4,10 +4,10 @@ Patchbay is a local tiling control surface for coding-agent work. The short glob
 
 Patchbay now has four connected pieces:
 
-- **Chat composer**: describe an app and desired outcome; Patchbay creates one root orchestrator agent.
-- **Hierarchical agent tree**: root agents create child agents, and child agents can create their own children.
+- **Chat composer**: describe one or more apps and desired outcomes; Patchbay creates a root planner agent that decomposes the prompt and adds child agents through Patchbay when useful.
+- **Hierarchical agent tree**: root agents can create additional child agents, and child agents can create their own children.
 - **Tiled WM shell**: agents are shown as tmux-backed tiles with status, profile, child count, and live terminal output.
-- **Loop runner**: live agents run `gsd --print` in tmux windows controlled by Patchbay; pending child agents are auto-started.
+- **Loop runner**: live agents run `gsd --print` in tmux windows controlled by Patchbay; pending child agents are auto-started, visible in Resource panel, and auto-stopped when idle.
 - **Skill presets**: each agent gets a prompt preset and recommended GSD skills based on the mission text, such as planning, frontend, debug, review, security, docs, or test work.
 
 ## Install
@@ -20,7 +20,6 @@ pb --help
 ## Configure projects
 
 Patchbay reads global config from `~/.config/patchbay/config.toml` or `$XDG_CONFIG_HOME/patchbay/config.toml`.
-The old `~/.config/airev/config.toml` path is still read as a compatibility fallback.
 
 ```toml
 [projects.cashpilot]
@@ -38,35 +37,45 @@ description = "Agent mission control"
 pb
 ```
 
-Important keys:
+Mission Control keeps the screen clean and does not print the full shortcut list in the footer. Learn these keys:
 
-- `c` opens the chat composer
-- `f` toggles the fast profile for new GSD sessions
-- `Enter` in composer creates a mission and immediately launches visible root-agent GSD terminals
-- arrow keys move focus between tiles/lists
-- `i` sends keyboard input to the focused tmux pane; this is mainly useful with `PATCHBAY_GSD_INTERACTIVE=1`; `Esc` returns to the WM
-- `Enter` on an agent tile enters its child-agent workspace, if it has children
-- `Esc` moves back up one child-agent workspace
-- `r` refreshes mission state
-- `s` manually starts a GSD terminal for the focused agent, useful for old pending missions
-- `d` opens initialized local revision projects
-- `q` quits
+- `c` opens the chat composer.
+- `Ctrl+M` cycles the model used for new GSD sessions; `default` leaves model choice to GSD.
+- `Enter` in composer creates a mission, opens the child-agent workspace when present, and starts pending child agents.
+- Agent tiles show a live GSD feed from the agent's tmux pane, including a working spinner while the pane is running.
+- In an agent workspace, normal typing goes to the bottom chat input for the focused GSD agent; `Enter` sends it.
+- Bottom chat slash commands: `/stop`, `/restart`, `/delete`, `/clear`.
+- `Tab` / `Shift+Tab` moves focus between panels.
+- Arrow keys move within the focused panel.
+- `t` focuses the theme picker on the main screen; `Enter` applies the selected theme.
+- `u` opens the resource panel with active Patchbay tmux panes, PIDs, commands, status, and idle time.
+- `K` on a selected mission/resource hard-cleans the mission: process tree cleanup plus tmux session/window cleanup.
+- Idle non-focused missions auto-stop after 30 minutes by default; set `PATCHBAY_AUTO_STOP_IDLE_SECS=0` to disable or another second value to tune it.
+- `i` sends raw keyboard input to the focused tmux pane when needed; `Esc` returns to the WM.
+- `Enter` on an agent tile enters its child-agent workspace, if it has children.
+- `Esc` moves back up one child-agent workspace or returns to the mission list.
+- `r` refreshes mission state.
+- `s` manually starts/restarts a GSD terminal for the focused agent.
+- `x` stops the focused agent terminal.
+- `D` / `Delete` deletes the focused agent, or deletes the selected mission on the mission list.
+- `d` opens initialized local revision projects.
+- `q` quits.
 
 The workspace is hierarchical: the root view shows top-level agents; child agents are visible only after entering their parent agent workspace.
 
 ## Compose from the CLI
 
 ```bash
-pb compose --text "cashpilot: onboarding, billing fixes, CSV export"
+pb compose --text "Fix the login bug, review the billing flow, and add tests"
 ```
 
-Run immediately with the fast profile:
+Run immediately with an explicit model/profile:
 
 ```bash
-pb compose --text "cashpilot: onboarding, billing fixes, CSV export" --run --fast
+pb compose --text "Fix the login bug, review the billing flow, and add tests" --run --profile gpt-5.1
 ```
 
-`pb compose` creates one root orchestrator agent and initializes `.ai-revisions/` in the target project when needed. The root agent decides how to split the work and can create child agents with `pb mission add-agent`. Patchbay watches mission state and automatically starts pending child agents in tmux windows. By default Patchbay launches agents as one-shot autonomous `gsd --print` loops so tmux lifecycle can mark panes complete or failed; set `PATCHBAY_GSD_INTERACTIVE=1` to launch an interactive GSD console instead.
+`pb compose` creates one root planner/container agent and initializes `.ai-revisions/` in the target projects when needed. When the prompt names multiple registered projects, Patchbay immediately creates pending child agents for those projects under the root container, so execution does not depend on the planner first calling `pb mission add-agent`. Patchbay watches mission state and automatically starts pending child agents in tmux windows. By default Patchbay launches one-shot `gsd --print` agents so prompts execute immediately and pane output becomes a live work log; set `PATCHBAY_GSD_INTERACTIVE=1` only when you want an interactive GSD console instead.
 
 Each agent prompt includes a routing preset and recommended GSD skills. For example, review tasks recommend `review`, debug tasks recommend `debug-like-expert`, planning tasks recommend `decompose-into-slices`, and frontend tasks recommend `frontend-design` plus accessibility polish.
 
@@ -77,8 +86,8 @@ pb mission list
 pb mission status
 pb mission show <mission-id>
 pb mission run <mission-id> [agent-id]
-pb mission run <mission-id> --all --fast
-pb mission add-agent <mission-id> --parent <agent-id> --project cashpilot --task "write tests" --fast
+pb mission run <mission-id> --all --profile gpt-5.1
+pb mission add-agent <mission-id> --parent <agent-id> --project my-app --task "write tests" --profile gpt-5.1
 pb mission update-agent <mission-id> <agent-id> --status complete --summary "done"
 ```
 
@@ -104,18 +113,14 @@ Each mission gets a tmux session named `patchbay-<mission-id>`, and each agent g
 tmux attach -t patchbay-<mission-id>
 ```
 
-Fast mode uses model profile `gpt-5.5-high` by default:
+Model selection is explicit. Omit `--profile` to use GSD's default model, or pass a model/profile name through to `gsd --model`:
 
 ```bash
-pb mission run <mission-id> --all --fast
-```
-
-Overrides:
-
-```bash
-PATCHBAY_FAST_MODEL="gpt-5.5-high" pb mission run <mission-id> --fast
+pb mission run <mission-id> --all --profile openai-codex/gpt-5.5
 PATCHBAY_MODEL="provider/model" pb mission run <mission-id>
 ```
+
+The TUI model picker queries GSD's configured model registry, matching the models shown by GSD's `/model` selector. Type `/model` in Mission Control chat to refresh/show the list, `/model provider/model-id` to select directly, or use `Ctrl+M` to cycle. `PATCHBAY_MODELS` is only a fallback if the GSD registry query fails.
 
 For tests or custom integrations, replace the runner command entirely:
 

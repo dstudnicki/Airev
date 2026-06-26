@@ -17,11 +17,8 @@ pub(crate) fn load_tui_settings(project: &Path) -> TuiSettings {
     }
 }
 
-pub(crate) fn load_merged_config(project: &Path) -> AirevConfigFile {
-    let mut config = AirevConfigFile::default();
-    if let Some(legacy_global_config) = read_config_file(&legacy_global_config_path()) {
-        config.merge(legacy_global_config);
-    }
+pub(crate) fn load_merged_config(project: &Path) -> PatchbayConfigFile {
+    let mut config = PatchbayConfigFile::default();
     if let Some(global_config) = read_config_file(&global_config_path()) {
         config.merge(global_config);
     }
@@ -113,10 +110,6 @@ pub(crate) fn global_config_path() -> PathBuf {
     config_path_for_app("patchbay", "patchbay-config.toml")
 }
 
-pub(crate) fn legacy_global_config_path() -> PathBuf {
-    config_path_for_app("airev", "airev-config.toml")
-}
-
 pub(crate) fn config_path_for_app(app_name: &str, fallback_file: &str) -> PathBuf {
     if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(xdg_config_home)
@@ -132,13 +125,13 @@ pub(crate) fn config_path_for_app(app_name: &str, fallback_file: &str) -> PathBu
     PathBuf::from(fallback_file)
 }
 
-pub(crate) fn read_config_file(path: &Path) -> Option<AirevConfigFile> {
+pub(crate) fn read_config_file(path: &Path) -> Option<PatchbayConfigFile> {
     let text = fs::read_to_string(path).ok()?;
     toml::from_str(&text).ok()
 }
 
-impl AirevConfigFile {
-    pub(crate) fn merge(&mut self, next: AirevConfigFile) {
+impl PatchbayConfigFile {
+    pub(crate) fn merge(&mut self, next: PatchbayConfigFile) {
         if next.theme.is_some() {
             self.theme = next.theme;
         }

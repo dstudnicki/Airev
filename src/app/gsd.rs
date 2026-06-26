@@ -65,9 +65,7 @@ pub(crate) fn gsd_status(start: &Path) -> Result<()> {
 }
 
 pub(crate) fn find_gsd_adapter_source_dir(start: &Path) -> Result<PathBuf> {
-    if let Ok(value) = env::var("PATCHBAY_GSD_ADAPTER_SOURCE")
-        .or_else(|_| env::var("AIREV_GSD_ADAPTER_SOURCE"))
-    {
+    if let Ok(value) = env::var("PATCHBAY_GSD_ADAPTER_SOURCE") {
         let candidate = PathBuf::from(value);
         validate_gsd_adapter_source(&candidate)?;
         return Ok(candidate);
@@ -108,9 +106,7 @@ pub(crate) fn gsd_adapter_install_dir() -> Result<PathBuf> {
 }
 
 pub(crate) fn gsd_extensions_dir() -> Result<PathBuf> {
-    if let Ok(value) = env::var("PATCHBAY_GSD_EXTENSIONS_DIR")
-        .or_else(|_| env::var("AIREV_GSD_EXTENSIONS_DIR"))
-    {
+    if let Ok(value) = env::var("PATCHBAY_GSD_EXTENSIONS_DIR") {
         return Ok(PathBuf::from(value));
     }
 

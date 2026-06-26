@@ -32,7 +32,7 @@ pub(crate) async fn handle_mission_command(
             project: agent_project,
             task,
             title,
-            fast,
+            profile,
         } => {
             add_mission_agent_command(
                 project,
@@ -41,7 +41,7 @@ pub(crate) async fn handle_mission_command(
                 &agent_project,
                 &task,
                 title.as_deref(),
-                fast,
+                profile,
             )
             .await
         }
@@ -50,15 +50,7 @@ pub(crate) async fn handle_mission_command(
             agent,
             all,
             profile,
-            fast,
-        } => run_mission_command(
-            project,
-            mission.as_deref(),
-            agent.as_deref(),
-            all,
-            profile,
-            fast,
-        ),
+        } => run_mission_command(project, mission.as_deref(), agent.as_deref(), all, profile),
         MissionCommand::Diffs { mission, agent } => {
             mission_diffs_command(project, &mission, agent.as_deref())
         }
@@ -189,12 +181,22 @@ pub(crate) fn create_mission_from_specs(
     let mission_id = next_mission_id(project)?;
     let now = Utc::now().to_rfc3339();
     let mut agents = Vec::new();
+    let parent_agent_ids = task_specs
+        .iter()
+        .filter_map(|spec| spec.parent_id.clone())
+        .collect::<BTreeSet<_>>();
 
     for (index, spec) in task_specs.iter().enumerate() {
         let registered = registry.resolve(&spec.project)?;
         let skill_preset = classify_mission_skill_preset(&source_text, &spec.task);
+        let agent_id = mission_agent_id(index, &registered.name);
+        let status = if parent_agent_ids.contains(&agent_id) {
+            MissionAgentStatus::Complete
+        } else {
+            MissionAgentStatus::Pending
+        };
         agents.push(MissionAgent {
-            id: mission_agent_id(index, &registered.name),
+            id: agent_id,
             parent_id: spec.parent_id.clone(),
             project: registered.name.clone(),
             project_path: registered.path.display().to_string(),
@@ -206,7 +208,7 @@ pub(crate) fn create_mission_from_specs(
                 &spec.task,
                 &skill_preset,
             ),
-            status: MissionAgentStatus::Pending,
+            status,
             created_at: now.clone(),
             updated_at: now.clone(),
             summary: None,
@@ -261,7 +263,7 @@ pub(crate) async fn compose_mission_command(
     text: Option<String>,
     text_file: Option<PathBuf>,
     run: bool,
-    fast: bool,
+    profile: Option<String>,
 ) -> Result<()> {
     let source_text = read_text_arg(text, text_file)?
         .ok_or_else(|| anyhow!("Compose requires --text or --text-file."))?;
@@ -269,10 +271,17 @@ pub(crate) async fn compose_mission_command(
     let task_specs = compose_mission_tasks(&registry, &source_text)?;
     ensure_revision_stores_for_tasks(&registry, &task_specs).await?;
     let title = title_from_prompt(&source_text);
-    let mission = create_mission_from_specs(project, &registry, title, source_text, &task_specs)?;
+    let runner_profile = normalize_runner_profile(profile);
+    let mut mission =
+        create_mission_from_specs(project, &registry, title, source_text, &task_specs)?;
+    if let Some(profile) = runner_profile.clone() {
+        for agent in &mut mission.agents {
+            agent.runner_profile = Some(profile.clone());
+        }
+        write_mission(project, &mission)?;
+    }
     if run {
-        let profile = if fast { Some("fast".to_string()) } else { None };
-        run_mission_command(project, Some(&mission.id), None, true, profile, fast)?;
+        run_mission_command(project, Some(&mission.id), None, true, runner_profile)?;
     }
     Ok(())
 }
@@ -283,25 +292,76 @@ pub(crate) fn compose_mission_tasks(
 ) -> Result<Vec<MissionTaskSpec>> {
     let mentioned = mentioned_compose_projects(registry, source_text);
     let root_project = orchestrator_project_name(registry, &mentioned)?;
-    Ok(vec![MissionTaskSpec {
+    let root_task = planner_task_from_compose_prompt(source_text);
+    let root_agent_id = mission_agent_id(0, &root_project);
+    let mut tasks = vec![MissionTaskSpec {
         project: root_project,
-        task: source_text.trim().to_string(),
+        task: root_task,
         parent_id: None,
-    }])
+    }];
+
+    if mentioned.len() > 1 {
+        for project in mentioned {
+            tasks.push(MissionTaskSpec {
+                task: child_task_from_compose_prompt(source_text, &project),
+                project,
+                parent_id: Some(root_agent_id.clone()),
+            });
+        }
+    }
+
+    Ok(tasks)
+}
+
+pub(crate) fn planner_task_from_compose_prompt(source_text: &str) -> String {
+    format!("Root planner: {}", source_text.trim())
+}
+
+pub(crate) fn child_task_from_compose_prompt(source_text: &str, project: &str) -> String {
+    format!(
+        "Work in {project}: carry out the parts of this mission that apply to {project}. Source mission: {}",
+        source_text.trim()
+    )
 }
 
 pub(crate) fn mentioned_compose_projects(
     registry: &ProjectRegistry,
     source_text: &str,
 ) -> Vec<String> {
-    let lower = source_text.to_ascii_lowercase();
+    let match_text = compose_project_match_text(source_text);
     registry
         .projects
         .values()
         .filter(|project| !project.name.starts_with('.'))
-        .filter(|project| lower.contains(&project.name.to_ascii_lowercase()))
+        .filter(|project| project_name_mentioned(&match_text, &project.name))
         .map(|project| project.name.clone())
         .collect()
+}
+
+pub(crate) fn compose_project_match_text(source_text: &str) -> String {
+    source_text
+        .split_whitespace()
+        .filter(|token| {
+            let trimmed = token.trim_end_matches(|ch: char| ch.is_ascii_punctuation());
+            !(trimmed.starts_with('/') || trimmed.starts_with("~/"))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+pub(crate) fn project_name_mentioned(match_text: &str, project_name: &str) -> bool {
+    let name = project_name.to_ascii_lowercase();
+    match_text.match_indices(&name).any(|(start, _)| {
+        let end = start + name.len();
+        let before = match_text[..start].chars().next_back();
+        let after = match_text[end..].chars().next();
+        is_project_name_boundary(before) && is_project_name_boundary(after)
+    })
+}
+
+pub(crate) fn is_project_name_boundary(ch: Option<char>) -> bool {
+    ch.is_none_or(|ch| !(ch.is_ascii_alphanumeric() || ch == '_'))
 }
 
 pub(crate) fn orchestrator_project_name(
@@ -332,7 +392,7 @@ pub(crate) async fn add_mission_agent_command(
     agent_project: &str,
     task: &str,
     title: Option<&str>,
-    fast: bool,
+    profile: Option<String>,
 ) -> Result<()> {
     let registry = load_project_registry(project)?;
     let registered = registry.resolve(agent_project)?;
@@ -375,7 +435,7 @@ pub(crate) async fn add_mission_agent_command(
             .iter()
             .map(|skill| skill.to_string())
             .collect(),
-        runner_profile: fast.then(|| "fast".to_string()),
+        runner_profile: normalize_runner_profile(profile),
         session_id: None,
         started_at: None,
         finished_at: None,
@@ -393,7 +453,6 @@ pub(crate) fn run_mission_command(
     agent_id: Option<&str>,
     all: bool,
     profile: Option<String>,
-    fast: bool,
 ) -> Result<()> {
     let mut mission = match mission_id {
         Some(id) => read_mission(project, id)?,
@@ -406,7 +465,7 @@ pub(crate) fn run_mission_command(
     }
 
     for id in selected {
-        run_agent_loop(project, &mut mission, &id, profile.clone(), fast)?;
+        run_agent_loop(project, &mut mission, &id, profile.clone())?;
     }
     write_mission(project, &mission)?;
     Ok(())
@@ -436,7 +495,6 @@ pub(crate) fn run_agent_loop(
     mission: &mut Mission,
     agent_id: &str,
     profile: Option<String>,
-    fast: bool,
 ) -> Result<()> {
     let mission_id = mission.id.clone();
     let agent_index = mission
@@ -444,9 +502,8 @@ pub(crate) fn run_agent_loop(
         .iter()
         .position(|agent| agent.id == agent_id)
         .ok_or_else(|| anyhow!("Mission `{mission_id}` has no agent `{agent_id}`"))?;
-    let profile_name = profile
+    let profile_name = normalize_runner_profile(profile)
         .or_else(|| mission.agents[agent_index].runner_profile.clone())
-        .or_else(|| fast.then(|| "fast".to_string()))
         .unwrap_or_else(|| "default".to_string());
     let session_id = format!("{}-{}", mission_id, agent_id);
     let started_at = Utc::now().to_rfc3339();
@@ -551,11 +608,14 @@ pub(crate) fn run_agent_process(
     }
 }
 
+pub(crate) fn normalize_runner_profile(profile: Option<String>) -> Option<String> {
+    profile
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != "default")
+}
+
 pub(crate) fn runner_model_for_profile(profile: &str) -> Option<String> {
     match profile {
-        "fast" => {
-            Some(env::var("PATCHBAY_FAST_MODEL").unwrap_or_else(|_| "gpt-5.5-high".to_string()))
-        }
         "default" => env::var("PATCHBAY_MODEL").ok(),
         other => Some(other.to_string()),
     }
@@ -1024,7 +1084,7 @@ pub(crate) fn build_mission_agent_prompt(
 ) -> String {
     let skills = skill_preset.skills.join(", ");
     format!(
-        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nPatchbay routing preset: {}\nRecommended GSD skills: {}\nPreset guidance: {}\n\nYou are a Patchbay loop agent running inside GSD. Work autonomously inside this project unless you explicitly create child agents. If the task needs parallel research, implementation, review, or project-specific work, decompose it into child agents with `${{PATCHBAY_BIN:-pb}} mission add-agent $PATCHBAY_MISSION_ID --parent $PATCHBAY_AGENT_ID --project <project> --task '<child task>'`. Child agents may create their own children using the same command. Use the recommended GSD skills above when applicable; load their instructions before doing matching work. Coordinate child work through Patchbay, inspect their results, continue looping until the original task is complete, and verify before completion. When done, report status with `${{PATCHBAY_BIN:-pb}} mission update-agent $PATCHBAY_MISSION_ID $PATCHBAY_AGENT_ID --status complete --summary '<summary>'`; on failure use --status failed --error '<error>'.",
+        "Mission: {mission_title}\nProject: {}\nProject path: {}\n\nTask:\n{task}\n\nSource mission text:\n{}\n\nPatchbay routing preset: {}\nRecommended GSD skills: {}\nPreset guidance: {}\n\nYou are a Patchbay loop agent running inside GSD. If the task begins with `Root planner:`, first decompose the source request into the smallest useful set of child agents; create them with `${{PATCHBAY_BIN:-pb}} mission add-agent $PATCHBAY_MISSION_ID --parent $PATCHBAY_AGENT_ID --project <project> --task '<child task>'`, then run them with `${{PATCHBAY_BIN:-pb}} mission run $PATCHBAY_MISSION_ID --all` when autonomous execution is appropriate. For non-root tasks, work autonomously unless parallel research, implementation, review, or project-specific work makes child agents useful. Child agents may create their own children using the same command. Use the recommended GSD skills above when applicable; load their instructions before doing matching work. Coordinate child work through Patchbay, inspect their results, continue looping until the original task is complete, and verify before completion. When done, report status with `${{PATCHBAY_BIN:-pb}} mission update-agent $PATCHBAY_MISSION_ID $PATCHBAY_AGENT_ID --status complete --summary '<summary>'`; on failure use --status failed --error '<error>'.",
         project.name,
         project.path.display(),
         source_text.trim(),
@@ -1185,7 +1245,7 @@ pub(crate) fn format_mission_status(status: &MissionStatus) -> &'static str {
     match status {
         MissionStatus::Draft => "draft",
         MissionStatus::Running => "running",
-        MissionStatus::Waiting => "waiting",
+        MissionStatus::Waiting => "queued",
         MissionStatus::Complete => "complete",
         MissionStatus::Failed => "failed",
         MissionStatus::Blocked => "blocked",
@@ -1196,7 +1256,7 @@ pub(crate) fn format_mission_agent_status(status: &MissionAgentStatus) -> &'stat
     match status {
         MissionAgentStatus::Pending => "pending",
         MissionAgentStatus::Running => "running",
-        MissionAgentStatus::Waiting => "waiting",
+        MissionAgentStatus::Waiting => "queued",
         MissionAgentStatus::Complete => "complete",
         MissionAgentStatus::Failed => "failed",
         MissionAgentStatus::Blocked => "blocked",
@@ -1252,6 +1312,30 @@ pub(crate) fn list_missions(project: &Path) -> Result<Vec<Mission>> {
     Ok(missions)
 }
 
+pub(crate) fn current_project_display_name(project: &Path) -> String {
+    let cargo_toml = project.join("Cargo.toml");
+    if let Ok(text) = fs::read_to_string(cargo_toml) {
+        if let Ok(value) = text.parse::<toml::Value>() {
+            if let Some(name) = value
+                .get("package")
+                .and_then(|package| package.get("name"))
+                .and_then(toml::Value::as_str)
+            {
+                return if name == "patchbay" {
+                    "Patchbay".to_string()
+                } else {
+                    name.to_string()
+                };
+            }
+        }
+    }
+    project
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("current")
+        .to_string()
+}
+
 pub(crate) fn load_project_registry(project: &Path) -> Result<ProjectRegistry> {
     let config = load_merged_config(project);
     let mut registry = ProjectRegistry::default();
@@ -1271,11 +1355,7 @@ pub(crate) fn load_project_registry(project: &Path) -> Result<ProjectRegistry> {
         }
     }
 
-    let current_name = project
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or("current")
-        .to_string();
+    let current_name = current_project_display_name(project);
     if current_name.starts_with('.') {
         discover_project_directories(&mut registry);
     }
@@ -1344,6 +1424,9 @@ pub(crate) fn discover_project_directories(registry: &mut ProjectRegistry) {
 }
 
 pub(crate) fn maybe_register_project_dir(registry: &mut ProjectRegistry, path: &Path) {
+    if env::var("HOME").is_ok_and(|home| path == Path::new(&home)) {
+        return;
+    }
     let Some(name) = path.file_name().and_then(OsStr::to_str) else {
         return;
     };

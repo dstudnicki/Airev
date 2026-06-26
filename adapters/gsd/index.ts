@@ -99,20 +99,20 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("pb-compose", {
-    description: "Compose a Patchbay mission from natural-language text. Prefix with --run or --fast when desired.",
+    description: "Compose a Patchbay mission from natural-language text. Use --profile <model> to choose a runner model.",
     handler: async (args, ctx) => {
       const text = commandText(args).trim();
       if (!text) {
-        notify(ctx, "Usage: /pb-compose [--run] [--fast] CashPilot: onboarding, billing", "warning");
+        notify(ctx, "Usage: /pb-compose [--run] [--profile model] Fix the login bug and add tests", "warning");
         return;
       }
       const tokens = shellishSplit(text);
       const run = tokens.includes("--run");
-      const fast = tokens.includes("--fast");
-      const request = tokens.filter((token) => token !== "--run" && token !== "--fast").join(" ");
+      const profile = valueAfter(tokens, "--profile");
+      const request = tokens.filter((token, index) => token !== "--run" && token !== "--profile" && tokens[index - 1] !== "--profile").join(" ");
       const command = ["compose", "--text", request];
       if (run) command.push("--run");
-      if (fast) command.push("--fast");
+      if (profile) command.push("--profile", profile);
       const result = await runPatchbay(pi, ctx, command, { quiet: true });
       notifyCommandResult(ctx, result, "Patchbay compose completed.");
     },
@@ -163,20 +163,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("pb-mission-run", {
-    description: "Run a Patchbay mission agent loop. Usage: <mission-id> [agent-id] [--all] [--fast] [--profile model].",
+    description: "Run a Patchbay mission agent loop. Usage: <mission-id> [agent-id] [--all] [--profile model].",
     handler: async (args, ctx) => {
       const tokens = shellishSplit(commandText(args));
       const mission = tokens.find((token) => !token.startsWith("--"));
       if (!mission) {
-        notify(ctx, "Usage: /pb-mission-run <mission-id> [agent-id] [--all] [--fast]", "warning");
+        notify(ctx, "Usage: /pb-mission-run <mission-id> [agent-id] [--all] [--profile model]", "warning");
         return;
       }
       const rest = tokens.filter((token) => token !== mission);
       const command = ["mission", "run", mission];
-      const agent = rest.find((token) => !token.startsWith("--") && token !== "fast");
+      const agent = rest.find((token, index) => !token.startsWith("--") && rest[index - 1] !== "--profile");
       if (agent) command.push(agent);
       if (rest.includes("--all")) command.push("--all");
-      if (rest.includes("--fast")) command.push("--fast");
       const profileIndex = rest.indexOf("--profile");
       if (profileIndex >= 0 && rest[profileIndex + 1]) command.push("--profile", rest[profileIndex + 1]);
       const result = await runPatchbay(pi, ctx, command, { quiet: true });
@@ -185,20 +184,21 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("pb-mission-add-agent", {
-    description: "Add a root or child agent. Usage: <mission-id> --project name --task text [--parent agent-id] [--fast].",
+    description: "Add a root or child agent. Usage: <mission-id> --project name --task text [--parent agent-id] [--profile model].",
     handler: async (args, ctx) => {
       const tokens = shellishSplit(commandText(args));
       const mission = tokens.find((token) => !token.startsWith("--"));
       const project = valueAfter(tokens, "--project");
       const task = valueAfter(tokens, "--task");
       if (!mission || !project || !task) {
-        notify(ctx, "Usage: /pb-mission-add-agent <mission-id> --project name --task text [--parent agent-id]", "warning");
+        notify(ctx, "Usage: /pb-mission-add-agent <mission-id> --project name --task text [--parent agent-id] [--profile model]", "warning");
         return;
       }
       const command = ["mission", "add-agent", mission, "--project", project, "--task", task];
       const parent = valueAfter(tokens, "--parent");
       if (parent) command.push("--parent", parent);
-      if (tokens.includes("--fast")) command.push("--fast");
+      const profile = valueAfter(tokens, "--profile");
+      if (profile) command.push("--profile", profile);
       const result = await runPatchbay(pi, ctx, command, { quiet: true });
       notifyCommandResult(ctx, result, "Patchbay child agent added.");
     },

@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn read_text_arg_returns_none_for_missing_file() {
-    let missing = std::env::temp_dir().join(format!("airev-missing-prompt-{}", std::process::id()));
+    let missing =
+        std::env::temp_dir().join(format!("patchbay-missing-prompt-{}", std::process::id()));
 
     let result =
         read_text_arg(None, Some(missing)).expect("missing prompt files should be ignored");
@@ -79,14 +80,14 @@ fn mission_store_round_trips_missions() {
     let mission = Mission {
         id: "mission_001".to_string(),
         title: "Demo mission".to_string(),
-        source_text: "Airev: build mission control".to_string(),
+        source_text: "Patchbay: build mission control".to_string(),
         status: MissionStatus::Running,
         created_at: now.clone(),
         updated_at: now.clone(),
         agents: vec![MissionAgent {
             id: "agent_001".to_string(),
             parent_id: None,
-            project: "airev".to_string(),
+            project: "patchbay".to_string(),
             project_path: project.display().to_string(),
             task: "Build registry".to_string(),
             prompt: "Work on S01".to_string(),
@@ -134,16 +135,19 @@ fn project_registry_loads_named_projects_from_config() {
     let project = temp_project("registry");
     write_project_registry_config(
         &project,
-        "[projects.airev]\npath = \"../Airev\"\ndescription = \"Mission Control repo\"\n",
+        "[projects.patchbay]\npath = \"../Patchbay\"\ndescription = \"Mission Control repo\"\n",
     );
 
     let registry = load_project_registry(&project).expect("registry loads");
-    let airev = registry.resolve("airev").expect("project exists");
+    let patchbay = registry.resolve("patchbay").expect("project exists");
 
-    assert_eq!(airev.name, "airev");
-    assert_eq!(airev.description.as_deref(), Some("Mission Control repo"));
-    assert!(airev.path.ends_with("Airev"));
-    assert_eq!(registry.names(), vec!["airev".to_string()]);
+    assert_eq!(patchbay.name, "patchbay");
+    assert_eq!(
+        patchbay.description.as_deref(),
+        Some("Mission Control repo")
+    );
+    assert!(patchbay.path.ends_with("Patchbay"));
+    assert_eq!(registry.names(), vec!["patchbay".to_string()]);
 
     fs::remove_dir_all(project).ok();
 }
@@ -153,21 +157,21 @@ fn parse_mission_tasks_accepts_prefixed_text_and_explicit_tasks() {
     let project = temp_project("mission-parser");
     write_project_registry_config(
         &project,
-        "[projects.Airev]\npath = \".\"\n\n[projects.CashPilot]\npath = \"../CashPilot\"\n",
+        "[projects.Patchbay]\npath = \".\"\n\n[projects.CashPilot]\npath = \"../CashPilot\"\n",
     );
     let registry = load_project_registry(&project).expect("registry loads");
 
     let tasks = parse_mission_tasks(
         &registry,
-        "Airev: Build dispatcher\nCashPilot: Fix login",
-        &["Airev=Write tests".to_string()],
+        "Patchbay: Build dispatcher\nCashPilot: Fix login",
+        &["Patchbay=Write tests".to_string()],
     )
     .expect("tasks parse");
 
     assert_eq!(tasks.len(), 3);
-    assert_eq!(tasks[0].project, "Airev");
+    assert_eq!(tasks[0].project, "Patchbay");
     assert_eq!(tasks[0].task, "Write tests");
-    assert_eq!(tasks[1].project, "Airev");
+    assert_eq!(tasks[1].project, "Patchbay");
     assert_eq!(tasks[1].task, "Build dispatcher");
     assert_eq!(tasks[2].project, "CashPilot");
     assert_eq!(tasks[2].task, "Fix login");
@@ -180,13 +184,13 @@ async fn start_mission_creates_project_scoped_agent_records() {
     let project = temp_project("mission-start");
     write_project_registry_config(
         &project,
-        "[projects.Airev]\npath = \".\"\n\n[projects.CashPilot]\npath = \"../CashPilot\"\n",
+        "[projects.Patchbay]\npath = \".\"\n\n[projects.CashPilot]\npath = \"../CashPilot\"\n",
     );
 
     start_mission(
         &project,
         Some("Daily mission".to_string()),
-        Some("Airev: Add dispatcher\nCashPilot: Inspect diffs".to_string()),
+        Some("Patchbay: Add dispatcher\nCashPilot: Inspect diffs".to_string()),
         None,
         Vec::new(),
     )
@@ -198,8 +202,8 @@ async fn start_mission_creates_project_scoped_agent_records() {
     let mission = &missions[0];
     assert_eq!(mission.title, "Daily mission");
     assert_eq!(mission.agents.len(), 2);
-    assert_eq!(mission.agents[0].id, "agent-01-airev");
-    assert_eq!(mission.agents[0].project, "Airev");
+    assert_eq!(mission.agents[0].id, "agent-01-patchbay");
+    assert_eq!(mission.agents[0].project, "Patchbay");
     assert!(mission.agents[0].prompt.contains("Project path:"));
     assert!(mission.agents[0].prompt.contains("Add dispatcher"));
     assert_eq!(mission.agents[1].id, "agent-02-cashpilot");
@@ -210,11 +214,11 @@ async fn start_mission_creates_project_scoped_agent_records() {
 #[tokio::test]
 async fn update_mission_agent_records_status_summary_and_diffs() {
     let project = temp_project("mission-update");
-    write_project_registry_config(&project, "[projects.Airev]\npath = \".\"\n");
+    write_project_registry_config(&project, "[projects.Patchbay]\npath = \".\"\n");
     start_mission(
         &project,
         Some("Update mission".to_string()),
-        Some("Airev: Update agent".to_string()),
+        Some("Patchbay: Update agent".to_string()),
         None,
         Vec::new(),
     )
@@ -227,7 +231,7 @@ async fn update_mission_agent_records_status_summary_and_diffs() {
     update_mission_agent_command(
         &project,
         &mission_id,
-        "agent-01-airev",
+        "agent-01-patchbay",
         Some(MissionAgentStatusArg::Complete),
         Some("Finished with tests".to_string()),
         None,
@@ -249,7 +253,7 @@ async fn update_mission_agent_records_status_summary_and_diffs() {
     assert_eq!(mission.agents[0].diff_refs[0].path, "src/main.rs");
     assert_eq!(mission.agents[0].diff_refs[1].revision_id, None);
     assert_eq!(mission.agents[0].diff_refs[1].path, "README.md");
-    mission_diffs_command(&project, &mission_id, Some("agent-01-airev"))
+    mission_diffs_command(&project, &mission_id, Some("agent-01-patchbay"))
         .expect("diff command lists refs");
 
     fs::remove_dir_all(project).ok();
@@ -258,11 +262,11 @@ async fn update_mission_agent_records_status_summary_and_diffs() {
 #[tokio::test]
 async fn mission_open_diff_rejects_unbound_diff_refs() {
     let project = temp_project("mission-open-diff");
-    write_project_registry_config(&project, "[projects.Airev]\npath = \".\"\n");
+    write_project_registry_config(&project, "[projects.Patchbay]\npath = \".\"\n");
     start_mission(
         &project,
         Some("Open diff mission".to_string()),
-        Some("Airev: Update agent".to_string()),
+        Some("Patchbay: Update agent".to_string()),
         None,
         Vec::new(),
     )
@@ -274,7 +278,7 @@ async fn mission_open_diff_rejects_unbound_diff_refs() {
     update_mission_agent_command(
         &project,
         &mission_id,
-        "agent-01-airev",
+        "agent-01-patchbay",
         None,
         None,
         None,
@@ -284,7 +288,8 @@ async fn mission_open_diff_rejects_unbound_diff_refs() {
     .expect("agent updates");
 
     let result =
-        mission_open_diff_command(&project, &mission_id, "agent-01-airev", 0, true, "code").await;
+        mission_open_diff_command(&project, &mission_id, "agent-01-patchbay", 0, true, "code")
+            .await;
 
     assert!(result.is_err());
     assert!(format!("{}", result.unwrap_err()).contains("not bound to a revision id"));
@@ -292,23 +297,171 @@ async fn mission_open_diff_rejects_unbound_diff_refs() {
 }
 
 #[test]
-fn compose_mission_tasks_creates_single_root_orchestrator() {
+fn compose_mission_tasks_creates_single_root_for_single_project_prompt() {
     let project = temp_project("compose-root");
-    write_project_registry_config(&project, "[projects.CashPilot]\npath = \".\"\n");
+    write_project_registry_config(&project, "[projects.DemoApp]\npath = \".\"\n");
     let registry = load_project_registry(&project).expect("registry loads");
 
-    let prompt = "CashPilot: onboarding, billing fixes, CSV export";
+    let prompt = "DemoApp: fix login, review billing, add CSV export";
     let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
 
     assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].project, "CashPilot");
-    assert_eq!(tasks[0].task, prompt);
+    assert_eq!(tasks[0].project, "DemoApp");
+    assert!(tasks[0].task.starts_with("Root planner:"));
+    assert!(tasks[0].task.contains(prompt));
     assert_eq!(tasks[0].parent_id, None);
     fs::remove_dir_all(project).ok();
 }
 
 #[test]
-fn tmux_shell_command_quotes_prompt_and_env() {
+fn compose_mission_tasks_creates_root_and_children_for_multi_project_prompt() {
+    let project = temp_project("compose-multi-root");
+    write_project_registry_config(
+        &project,
+        "[projects.estateboards]\npath = \"/tmp/estateboards\"\n[projects.workspace]\npath = \"/tmp/workspace\"\n",
+    );
+    let registry = load_project_registry(&project).expect("registry loads");
+
+    let prompt = "Pracuj w estateboards i workspace. W estateboards sprawdź API. W workspace znajdź swaplock.";
+    let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
+
+    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks[0].parent_id, None);
+    assert!(tasks[0].task.starts_with("Root planner:"));
+    assert!(tasks[0].task.contains("estateboards"));
+    assert!(tasks[0].task.contains("workspace"));
+    assert_eq!(tasks[1].project, "estateboards");
+    assert_eq!(tasks[1].parent_id.as_deref(), Some("agent-01-estateboards"));
+    assert!(tasks[1].task.starts_with("Work in estateboards:"));
+    assert_eq!(tasks[2].project, "workspace");
+    assert_eq!(tasks[2].parent_id.as_deref(), Some("agent-01-estateboards"));
+    assert!(tasks[2].task.starts_with("Work in workspace:"));
+    fs::remove_dir_all(project).ok();
+}
+
+#[test]
+fn pasted_prompt_collapses_newlines_without_submitting() {
+    assert_eq!(
+        normalize_pasted_prompt("Pracuj w estateboards\nsprawdź API\r\ni frontend"),
+        "Pracuj w estateboards sprawdź API i frontend"
+    );
+}
+
+#[test]
+fn mission_workspace_shows_root_and_child_agents_together() {
+    let project = temp_project("flat-agent-workspace");
+    let now = "2026-06-25T00:00:00Z".to_string();
+    let agent = |id: &str, parent_id: Option<&str>| MissionAgent {
+        id: id.to_string(),
+        parent_id: parent_id.map(str::to_string),
+        project: "Patchbay".to_string(),
+        project_path: project.display().to_string(),
+        task: id.to_string(),
+        prompt: id.to_string(),
+        status: MissionAgentStatus::Pending,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        summary: None,
+        last_error: None,
+        revision_ids: Vec::new(),
+        diff_refs: Vec::new(),
+        prompt_preset: Some("implementation".to_string()),
+        recommended_skills: vec!["test".to_string()],
+        runner_profile: None,
+        session_id: None,
+        started_at: None,
+        finished_at: None,
+        last_log: None,
+    };
+    let mission = Mission {
+        id: "mission-flat".to_string(),
+        title: "Flat mission".to_string(),
+        source_text: "flat".to_string(),
+        status: MissionStatus::Running,
+        created_at: now.clone(),
+        updated_at: now.clone(),
+        agents: vec![
+            agent("root", None),
+            agent("child", Some("root")),
+            agent("swaplock", Some("root")),
+            agent("workspace", Some("root")),
+        ],
+    };
+    let mut app = MissionControlApp {
+        mission_id: mission.id.clone(),
+        mission: mission.clone(),
+        missions: vec![mission],
+        selected_mission: 0,
+        focus: MissionControlPanel::Agents,
+        selected_agent: 0,
+        selected_diff: 0,
+        workspace_parent: None,
+        workspace_layout: MissionWorkspaceLayout::Auto,
+        workspace_layout_anchor: None,
+        projects: Vec::new(),
+        selected_project: 0,
+        theme_names: Vec::new(),
+        selected_theme: 0,
+        resources: Vec::new(),
+        selected_resource: 0,
+        last_resource_refresh: Instant::now(),
+        last_auto_stop_check: Instant::now(),
+        auto_stop_idle_secs: None,
+        launch_revision_project: None,
+        compose_input: String::new(),
+        compose_cursor: 0,
+        compose_agent_target: None,
+        chat_input: String::new(),
+        model_options: vec!["default".to_string()],
+        selected_model: 0,
+        terminal_input: false,
+        terminals: BTreeMap::new(),
+        last_refresh: Instant::now(),
+        message: String::new(),
+        settings: load_tui_settings(&project),
+    };
+
+    assert_eq!(visible_agent_indexes(&app), vec![0, 1, 2, 3]);
+    assert!(handle_workspace_layout_key(
+        &mut app,
+        KeyCode::Right,
+        KeyModifiers::CONTROL
+    ));
+    assert_eq!(app.workspace_layout, MissionWorkspaceLayout::FocusRight);
+    assert_eq!(app.workspace_layout_anchor.as_deref(), Some("root"));
+    app.selected_agent = 1;
+    assert_eq!(app.workspace_layout_anchor.as_deref(), Some("root"));
+    assert!(handle_workspace_layout_key(
+        &mut app,
+        KeyCode::Char('0'),
+        KeyModifiers::CONTROL
+    ));
+    assert_eq!(app.workspace_layout, MissionWorkspaceLayout::Auto);
+    assert_eq!(app.workspace_layout_anchor, None);
+
+    app.selected_agent = 1;
+    assert!(!handle_workspace_layout_key(
+        &mut app,
+        KeyCode::Down,
+        KeyModifiers::CONTROL
+    ));
+    assert_eq!(app.workspace_layout, MissionWorkspaceLayout::Auto);
+    assert_eq!(app.workspace_layout_anchor, None);
+    app.selected_agent = 0;
+    move_mission_control_selection_for_key(&mut app, KeyCode::Right);
+    assert_eq!(app.selected_agent, 1);
+
+    fs::remove_dir_all(project).ok();
+}
+
+#[test]
+fn tmux_shell_command_quotes_env_and_runs_print_mode_by_default() {
+    let old_interactive = env::var("PATCHBAY_GSD_INTERACTIVE").ok();
+    let old_print = env::var("PATCHBAY_GSD_PRINT").ok();
+    unsafe {
+        env::remove_var("PATCHBAY_GSD_INTERACTIVE");
+        env::remove_var("PATCHBAY_GSD_PRINT");
+    }
     let agent = MissionAgent {
         id: "agent-01-demo".to_string(),
         parent_id: Some("agent-root".to_string()),
@@ -333,13 +486,37 @@ fn tmux_shell_command_quotes_prompt_and_env() {
     };
 
     let command =
-        tmux_agent_shell_command(Path::new("/tmp/patch bay"), "mission-1", &agent, "fast");
+        tmux_agent_shell_command(Path::new("/tmp/patch bay"), "mission-1", &agent, "gpt-5.1");
 
     assert!(command.contains("PATCHBAY_HOME='/tmp/patch bay'"));
     assert!(command.contains("PATCHBAY_PARENT_AGENT_ID='agent-root'"));
     assert!(command.contains("PATCHBAY_BIN="));
+    assert!(command.contains("PATCHBAY_PROMPT_FILE="));
     assert!(command.contains("exec gsd --print"));
-    assert!(command.contains("'Say '\\''hello'\\'' and use spaces'"));
+    assert!(command.contains("\"$(cat '/tmp/patch bay/.ai-revisions/runtime/missions/mission-1-agent-01-demo.prompt.txt')\""));
+    assert!(!command.contains("Say '\\''hello'\\'' and use spaces"));
+    if let Some(value) = old_interactive {
+        unsafe { env::set_var("PATCHBAY_GSD_INTERACTIVE", value) };
+    }
+    if let Some(value) = old_print {
+        unsafe { env::set_var("PATCHBAY_GSD_PRINT", value) };
+    }
+}
+
+#[test]
+fn tmux_logged_shell_command_tees_agent_output() {
+    let command = tmux_agent_logged_shell_command(
+        "PATCHBAY_AGENT_ID='agent-1' exec gsd --print 'hello'",
+        Path::new("/tmp/agent 1.log"),
+    );
+
+    assert!(command.starts_with("exec bash -lc "));
+    assert!(command.contains("set -o pipefail"));
+    assert!(command.contains("PATCHBAY_AGENT_ID"));
+    assert!(command.contains("exec gsd --print"));
+    assert!(command.contains("tee -a"));
+    assert!(command.contains("/tmp/agent 1.log"));
+    assert!(command.contains("agent exited with status"));
 }
 
 #[test]
@@ -401,13 +578,17 @@ fn tmux_session_ids_parse_for_reconnect() {
 fn global_registry_discovers_project_directories_from_home_dev() {
     let home = temp_project("discover-home");
     let dev = home.join("Dev");
-    let airev = dev.join("Airev");
+    let patchbay_project = dev.join("Patchbay");
     let cashpilot = dev.join("CashPilot");
-    let patchbay = home.join(".patchbay");
-    fs::create_dir_all(&airev).expect("airev dir");
+    let patchbay_store = home.join(".patchbay");
+    fs::create_dir_all(&patchbay_project).expect("patchbay dir");
     fs::create_dir_all(&cashpilot).expect("cashpilot dir");
-    fs::create_dir_all(&patchbay).expect("patchbay dir");
-    fs::write(airev.join("Cargo.toml"), "[package]\nname=\"airev\"\n").expect("airev marker");
+    fs::create_dir_all(&patchbay_store).expect("hidden patchbay dir");
+    fs::write(
+        patchbay_project.join("Cargo.toml"),
+        "[package]\nname=\"patchbay\"\n",
+    )
+    .expect("patchbay marker");
     fs::write(cashpilot.join("package.json"), "{}\n").expect("cashpilot marker");
 
     let old_home = env::var("HOME").ok();
@@ -416,7 +597,7 @@ fn global_registry_discovers_project_directories_from_home_dev() {
         env::set_var("HOME", &home);
     }
     env::set_current_dir(&home).expect("set cwd");
-    let registry = load_project_registry(&patchbay).expect("registry loads");
+    let registry = load_project_registry(&patchbay_store).expect("registry loads");
     env::set_current_dir(old_cwd).expect("restore cwd");
     if let Some(old_home) = old_home {
         unsafe { env::set_var("HOME", old_home) };
@@ -425,8 +606,11 @@ fn global_registry_discovers_project_directories_from_home_dev() {
     }
 
     assert_eq!(
-        registry.resolve("Airev").expect("Airev discovered").path,
-        airev
+        registry
+            .resolve("Patchbay")
+            .expect("Patchbay discovered")
+            .path,
+        patchbay_project
     );
     assert_eq!(
         registry
@@ -439,49 +623,129 @@ fn global_registry_discovers_project_directories_from_home_dev() {
 }
 
 #[test]
-fn compose_ignores_hidden_patchbay_as_root_orchestrator() {
+fn compose_ignores_hidden_patchbay_as_root_planner() {
     let project = temp_project("compose-hidden-root");
     write_project_registry_config(
         &project,
-        "[projects.\".patchbay\"]\npath = \".\"\n[projects.Airev]\npath = \".\"\n[projects.CashPilot]\npath = \".\"\n",
+        "[projects.\".patchbay\"]\npath = \".\"\n[projects.Patchbay]\npath = \".\"\n[projects.CashPilot]\npath = \".\"\n",
     );
     let registry = load_project_registry(&project).expect("registry loads");
 
-    let tasks = compose_mission_tasks(&registry, "Odpal Airev i CashPilot").expect("compose parses");
+    let tasks =
+        compose_mission_tasks(&registry, "Odpal Patchbay i CashPilot").expect("compose parses");
 
-    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks.len(), 3);
     assert_ne!(tasks[0].project, ".patchbay");
-    assert_eq!(tasks[0].project, "Airev");
+    assert_eq!(tasks[0].project, "Patchbay");
+    assert!(tasks[0].task.contains("CashPilot"));
+    assert_eq!(tasks[0].parent_id, None);
+    let child_projects = tasks[1..]
+        .iter()
+        .map(|task| task.project.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(child_projects, BTreeSet::from(["CashPilot", "Patchbay"]));
+    assert!(
+        tasks[1..]
+            .iter()
+            .all(|task| task.parent_id.as_deref() == Some("agent-01-patchbay"))
+    );
     fs::remove_dir_all(project).ok();
 }
 
 #[test]
-fn compose_natural_multi_project_prompt_creates_only_root_orchestrator() {
+fn compose_natural_multi_project_prompt_creates_root_planner_agent() {
     let project = temp_project("compose-orchestrator");
     write_project_registry_config(
         &project,
-        "[projects.Patchbay]\npath = \".\"\n[projects.Airev]\npath = \".\"\n[projects.CashPilot]\npath = \".\"\n",
+        "[projects.Patchbay]\npath = \".\"\n[projects.CashPilot]\npath = \".\"\n",
     );
     let registry = load_project_registry(&project).expect("registry loads");
 
-    let prompt = "Odpal projekt Airev i CashPilot, dowiedz sie o co chodzi w kazdym z projektów i do cashpilot zaplanuj przepisanie webowego projektu na mobilke iOS w jezyku swift";
+    let prompt = "Odpal projekt Patchbay i CashPilot, dowiedz sie o co chodzi w kazdym z projektów i do cashpilot zaplanuj przepisanie webowego projektu na mobilke iOS w jezyku swift";
+    let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
+
+    assert_eq!(tasks.len(), 3);
+    assert_eq!(tasks[0].project, "Patchbay");
+    assert!(tasks[0].task.starts_with("Root planner:"));
+    assert!(tasks[0].task.contains(prompt));
+    assert_eq!(tasks[0].parent_id, None);
+    let child_projects = tasks[1..]
+        .iter()
+        .map(|task| task.project.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(child_projects, BTreeSet::from(["CashPilot", "Patchbay"]));
+    assert!(
+        tasks[1..]
+            .iter()
+            .all(|task| task.parent_id.as_deref() == Some("agent-01-patchbay"))
+    );
+    fs::remove_dir_all(project).ok();
+}
+
+#[test]
+fn compose_ignores_project_names_that_only_appear_inside_absolute_paths() {
+    let project = temp_project("compose-path-segments");
+    write_project_registry_config(
+        &project,
+        "[projects.Patchbay]\npath = \".\"\n[projects.dstudnicki]\npath = \".\"\n[projects.estateboards]\npath = \".\"\n",
+    );
+    let registry = load_project_registry(&project).expect("registry loads");
+    let prompt = "Otwórz projekty estateboards z katalogu /home/dstudnicki/workspaces";
+
     let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
 
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].project, "Patchbay");
-    assert_eq!(tasks[0].task, prompt);
-    assert_eq!(tasks[0].parent_id, None);
+    assert!(tasks[0].task.contains("estateboards"));
+    assert!(!tasks[0].project.contains("dstudnicki"));
+    fs::remove_dir_all(project).ok();
+}
+
+#[test]
+fn create_mission_from_composed_prompt_marks_root_planner_complete() {
+    let project = temp_project("compose-planner-status");
+    write_project_registry_config(
+        &project,
+        "[projects.Patchbay]\npath = \".\"\n[projects.CashPilot]\npath = \".\"\n",
+    );
+    let registry = load_project_registry(&project).expect("registry loads");
+    let prompt = "Odpal Patchbay i CashPilot";
+    let tasks = compose_mission_tasks(&registry, prompt).expect("compose parses");
+
+    let mission = create_mission_from_specs(
+        &project,
+        &registry,
+        "mission".to_string(),
+        prompt.to_string(),
+        &tasks,
+    )
+    .expect("mission creates");
+
+    assert_eq!(mission.agents.len(), 3);
+    assert_eq!(mission.agents[0].status, MissionAgentStatus::Complete);
+    assert_eq!(mission.agents[0].parent_id, None);
+    assert!(mission.agents[0].task.starts_with("Root planner:"));
+    assert_eq!(mission.agents[1].status, MissionAgentStatus::Pending);
+    assert_eq!(
+        mission.agents[1].parent_id.as_deref(),
+        Some("agent-01-patchbay")
+    );
+    assert_eq!(mission.agents[2].status, MissionAgentStatus::Pending);
+    assert_eq!(
+        mission.agents[2].parent_id.as_deref(),
+        Some("agent-01-patchbay")
+    );
     fs::remove_dir_all(project).ok();
 }
 
 #[tokio::test]
 async fn add_mission_agent_creates_child_agent() {
     let project = temp_project("add-child");
-    write_project_registry_config(&project, "[projects.Airev]\npath = \".\"\n");
+    write_project_registry_config(&project, "[projects.Patchbay]\npath = \".\"\n");
     start_mission(
         &project,
         Some("Parent mission".to_string()),
-        Some("Airev: Parent task".to_string()),
+        Some("Patchbay: Parent task".to_string()),
         None,
         Vec::new(),
     )
@@ -492,11 +756,11 @@ async fn add_mission_agent_creates_child_agent() {
     add_mission_agent_command(
         &project,
         &mission_id,
-        Some("agent-01-airev"),
-        "Airev",
+        Some("agent-01-patchbay"),
+        "Patchbay",
         "Child task",
         None,
-        true,
+        Some("gpt-5.1".to_string()),
     )
     .await
     .expect("child agent added");
@@ -505,21 +769,21 @@ async fn add_mission_agent_creates_child_agent() {
     let child = mission
         .agents
         .iter()
-        .find(|agent| agent.parent_id.as_deref() == Some("agent-01-airev"))
+        .find(|agent| agent.parent_id.as_deref() == Some("agent-01-patchbay"))
         .expect("child exists");
     assert_eq!(child.task, "Child task");
-    assert_eq!(child.runner_profile.as_deref(), Some("fast"));
+    assert_eq!(child.runner_profile.as_deref(), Some("gpt-5.1"));
     fs::remove_dir_all(project).ok();
 }
 
 #[tokio::test]
 async fn run_mission_uses_runner_command_and_marks_agent_complete() {
     let project = temp_project("runner");
-    write_project_registry_config(&project, "[projects.Airev]\npath = \".\"\n");
+    write_project_registry_config(&project, "[projects.Patchbay]\npath = \".\"\n");
     start_mission(
         &project,
         Some("Runner mission".to_string()),
-        Some("Airev: Run fake command".to_string()),
+        Some("Patchbay: Run fake command".to_string()),
         None,
         Vec::new(),
     )
@@ -533,10 +797,9 @@ async fn run_mission_uses_runner_command_and_marks_agent_complete() {
     run_mission_command(
         &project,
         Some(&mission_id),
-        Some("agent-01-airev"),
+        Some("agent-01-patchbay"),
         false,
         None,
-        false,
     )
     .expect("runner succeeds");
     unsafe {
@@ -544,7 +807,7 @@ async fn run_mission_uses_runner_command_and_marks_agent_complete() {
     }
 
     let mission = read_mission(&project, &mission_id).expect("mission reads");
-    let agent = mission_agent(&mission, "agent-01-airev").expect("agent exists");
+    let agent = mission_agent(&mission, "agent-01-patchbay").expect("agent exists");
     assert_eq!(agent.status, MissionAgentStatus::Complete);
     assert_eq!(agent.summary.as_deref(), Some("runner-ok"));
     fs::remove_dir_all(project).ok();
@@ -558,7 +821,7 @@ fn write_project_registry_config(project: &Path, contents: &str) {
 
 fn temp_project(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "airev-test-{label}-{}-{}",
+        "patchbay-test-{label}-{}-{}",
         std::process::id(),
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     ));

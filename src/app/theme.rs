@@ -76,7 +76,7 @@ pub(crate) fn built_in_theme_config(name: &str) -> Option<ThemeConfigFile> {
     let mut theme = default_terminal_theme_config();
     match name {
         "terminal" => Some(theme),
-        "airev-dark" => {
+        "patchbay-dark" => {
             theme.background = Some("#1f2130".to_string());
             theme.foreground = Some("#f3f4f8".to_string());
             theme.muted = Some("#7d8498".to_string());

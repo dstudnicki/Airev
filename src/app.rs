@@ -9,7 +9,9 @@ use std::process::Command;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -20,10 +22,12 @@ use chrono::Utc;
 use clap::Parser;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
@@ -40,7 +44,7 @@ const ACTIVE_TURN_FILE: &str = "current-turn.json";
 const MISSIONS_DIR: &str = "missions";
 const BUILT_IN_THEME_NAMES: &[&str] = &[
     "terminal",
-    "airev-dark",
+    "patchbay-dark",
     "catppuccin-mocha",
     "gruvbox-dark",
     "high-contrast",
@@ -132,11 +136,11 @@ pub async fn run() -> Result<()> {
                 text,
                 text_file,
                 run,
-                fast,
+                profile,
             } => {
                 let control_root = global_control_root()?;
                 ensure_global_control_store(&control_root)?;
-                compose_mission_command(&control_root, text, text_file, run, fast).await
+                compose_mission_command(&control_root, text, text_file, run, profile).await
             }
             Commands::Mission { command } => {
                 let control_root = global_control_root()?;

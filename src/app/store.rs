@@ -119,8 +119,14 @@ pub(crate) fn global_control_root() -> Result<PathBuf> {
 }
 
 pub(crate) fn ensure_global_control_store(root: &Path) -> Result<()> {
-    fs::create_dir_all(root.join(STORE_DIR).join(RUNTIME_DIR).join(MISSIONS_DIR))
-        .with_context(|| format!("Failed to create Patchbay mission store under {}", root.display()))?;
+    fs::create_dir_all(root.join(STORE_DIR).join(RUNTIME_DIR).join(MISSIONS_DIR)).with_context(
+        || {
+            format!(
+                "Failed to create Patchbay mission store under {}",
+                root.display()
+            )
+        },
+    )?;
     Ok(())
 }
 
@@ -180,7 +186,7 @@ pub(crate) async fn begin_turn(
 
     let active_path = active_turn_path(project);
     if active_path.exists() && !force {
-        bail!("An Airev turn is already active. Use --force to replace stale turn state.");
+        bail!("A Patchbay turn is already active. Use --force to replace stale turn state.");
     }
 
     let prompt_text = read_text_arg(prompt, prompt_file)?.unwrap_or_default();
@@ -205,7 +211,7 @@ pub(crate) async fn begin_turn(
     };
 
     write_active_turn(project, &turn)?;
-    println!("Airev turn started: {}", turn.title);
+    println!("Patchbay turn started: {}", turn.title);
     Ok(())
 }
 
@@ -232,7 +238,7 @@ pub(crate) fn snapshot_baseline_files<'a>(
 
 pub(crate) fn touch_path(project: &Path, input_path: &str) -> Result<()> {
     let mut turn = read_active_turn(project)?
-        .ok_or_else(|| anyhow!("No active Airev turn. Run `airev turn begin` first."))?;
+        .ok_or_else(|| anyhow!("No active Patchbay turn. Run `pb turn begin` first."))?;
     let rel = normalize_project_path(project, input_path)?;
     turn.touched.insert(rel.clone());
 
@@ -248,7 +254,7 @@ pub(crate) fn touch_path(project: &Path, input_path: &str) -> Result<()> {
     }
 
     write_active_turn(project, &turn)?;
-    println!("Airev touched: {rel}");
+    println!("Patchbay touched: {rel}");
     Ok(())
 }
 
@@ -259,7 +265,7 @@ pub(crate) async fn end_turn(
     title: Option<String>,
 ) -> Result<()> {
     let mut turn = read_active_turn(project)?
-        .ok_or_else(|| anyhow!("No active Airev turn. Run `airev turn begin` first."))?;
+        .ok_or_else(|| anyhow!("No active Patchbay turn. Run `pb turn begin` first."))?;
     let has_explicit_title = title.is_some();
     if let Some(title) = title {
         turn.title = title;
@@ -272,7 +278,7 @@ pub(crate) async fn end_turn(
 
     if changed_paths.is_empty() {
         remove_active_turn(project)?;
-        println!("No changed files; no Airev revision recorded.");
+        println!("No changed files; no Patchbay revision recorded.");
         return Ok(());
     }
 
