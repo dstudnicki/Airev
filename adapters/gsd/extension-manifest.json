@@ -1,14 +1,26 @@
 {
-  "id": "airev-gsd-adapter",
-  "name": "Airev GSD Adapter",
+  "id": "patchbay-gsd-adapter",
+  "name": "Patchbay GSD Adapter",
   "version": "0.1.0",
-  "description": "Records GSD AI turns into the local Rust Airev revision journal.",
+  "description": "Records GSD AI turns into the local Patchbay revision journal.",
   "tier": "community",
   "requires": {
     "platform": ">=2.29.0"
   },
   "provides": {
-    "commands": ["airev-init", "airev-status", "airev-revisions"],
+    "commands": [
+      "pb-init",
+      "pb-status",
+      "pb-revisions",
+      "pb-compose",
+      "pb-mission-start",
+      "pb-mission-list",
+      "pb-mission-status",
+      "pb-mission-show",
+      "pb-mission-run",
+      "pb-mission-add-agent",
+      "pb-mission-update-agent"
+    ],
     "hooks": ["before_agent_start", "tool_call", "agent_end"]
   }
 }
